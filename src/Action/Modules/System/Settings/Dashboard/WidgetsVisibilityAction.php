@@ -7,6 +7,7 @@ use App\DTO\Settings\Dashboard\Widget\SettingsWidgetVisibilityDto;
 use App\DTO\Settings\SettingsDashboardDto;
 use App\Entity\Setting;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\Dashboard\DashboardService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
@@ -27,7 +28,8 @@ class WidgetsVisibilityAction extends AbstractController {
     public function __construct(
         private readonly SettingsSaver             $settingsSaverService,
         private readonly SettingsLoader            $settingsLoaderService,
-        private readonly SettingsLockModuleService $settingsLockModuleService
+        private readonly SettingsLockModuleService $settingsLockModuleService,
+        private readonly PendoTrackService         $pendoTrackService
     ) {
     }
 
@@ -94,6 +96,23 @@ class WidgetsVisibilityAction extends AbstractController {
         }
 
         $this->settingsSaverService->saveSettingsForDashboardWidgetsVisibility($dtos);
+
+        $visibleWidgets = [];
+        $hiddenWidgets  = [];
+        foreach ($dtos as $dto) {
+            if ($dto->isVisible()) {
+                $visibleWidgets[] = $dto->getName();
+                continue;
+            }
+
+            $hiddenWidgets[] = $dto->getName();
+        }
+
+        $this->pendoTrackService->track('dashboard_widgets_visibility_updated', [
+            'visibleWidgets'     => $visibleWidgets,
+            'hiddenWidgets'      => $hiddenWidgets,
+            'hiddenWidgetsCount' => count($hiddenWidgets),
+        ]);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
     }

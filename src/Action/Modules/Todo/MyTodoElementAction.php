@@ -7,6 +7,7 @@ use App\Entity\Modules\Todo\MyTodo;
 use App\Entity\Modules\Todo\MyTodoElement;
 use App\Repository\Modules\Todo\MyTodoRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -25,7 +26,8 @@ class MyTodoElementAction extends AbstractController {
 
     public function __construct(
         private readonly MyTodoRepository       $todoRepository,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -102,10 +104,22 @@ class MyTodoElementAction extends AbstractController {
         $this->em->flush();
 
         $areAllElementsDone = $this->todoRepository->areAllElementsDone($todo->getId());
+        $wasCompleted       = (bool) $todo->getCompleted();
         $todo->setCompleted($areAllElementsDone);
 
         $this->em->persist($todo);
         $this->em->flush();
+
+        // only the moment when the whole list became done is tracked, not each save of already completed list
+        if (!$wasCompleted && $areAllElementsDone) {
+            $this->pendoTrackService->track('todo_list_completed', [
+                'todoId'             => $todo->getId(),
+                'elementsCount'      => $todo->getMyTodoElement()->filter(fn (MyTodoElement $todoElement) => !$todoElement->isDeleted())->count(),
+                'moduleName'         => $todo->getModule()?->getName(),
+                'relatedEntityId'    => $todo->getRelatedEntityId(),
+                'displayOnDashboard' => (bool) $todo->getDisplayOnDashboard(),
+            ]);
+        }
     }
 
 }

@@ -8,6 +8,7 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Payments\MyPaymentsMonthly;
 use App\Entity\Modules\Payments\MyPaymentsSettings;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -31,7 +32,8 @@ class MyPaymentsMonthlyAction extends AbstractController {
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface        $logger,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -128,10 +130,13 @@ class MyPaymentsMonthlyAction extends AbstractController {
         } catch (Exception $e) {
             $this->em->rollback();
             $this->logException($e);
+            $this->trackImportCompleted($dataArray, $e);
 
             $msg = $this->translator->trans('module.monthly_payments.import.message.fail');
             return BaseResponse::buildInternalServerErrorResponse($msg)->toJsonResponse();
         }
+
+        $this->trackImportCompleted($dataArray);
 
         $msg = $this->translator->trans('module.monthly_payments.import.message.success');
         return BaseResponse::buildOkResponse($msg)->toJsonResponse();
@@ -184,6 +189,39 @@ class MyPaymentsMonthlyAction extends AbstractController {
         $this->em->flush();
 
         return BaseResponse::buildOkResponse();
+    }
+
+    /**
+     * Tracks the import outcome, only aggregated data is sent (not the rows content).
+     * The data comes directly from request body, so it's type-checked before being used.
+     *
+     * @param mixed          $dataArray - imported rows
+     * @param Exception|null $exception - set if the import has failed
+     */
+    private function trackImportCompleted(mixed $dataArray, ?Exception $exception = null): void
+    {
+        $rows       = is_array($dataArray) ? $dataArray : [];
+        $properties = [
+            'status'   => is_null($exception) ? 'success' : 'failure',
+            'rowCount' => count($rows),
+        ];
+
+        if (!is_null($exception)) {
+            $properties['failureReason'] = $exception::class;
+        } else {
+            $paymentsTimestamps = array_filter(array_map(
+                fn (mixed $date): int|false => is_string($date) ? strtotime($date) : false,
+                array_column($rows, 'date')
+            ));
+
+            $properties['distinctTypeIdCount'] = count(array_unique(array_filter(array_column($rows, 'typeId'), 'is_scalar')));
+            if (!empty($paymentsTimestamps)) {
+                $properties['earliestPaymentDate'] = date('Y-m-d', min($paymentsTimestamps));
+                $properties['latestPaymentDate']   = date('Y-m-d', max($paymentsTimestamps));
+            }
+        }
+
+        $this->pendoTrackService->track('monthly_payments_import_completed', $properties);
     }
 
 }

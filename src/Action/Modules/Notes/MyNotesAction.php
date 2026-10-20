@@ -8,6 +8,7 @@ use App\Entity\Modules\Notes\MyNotesCategories;
 use App\Entity\System\LockedResource;
 use App\Repository\Modules\Notes\MyNotesRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\System\LockedResourceService;
@@ -27,6 +28,7 @@ class MyNotesAction extends AbstractController {
         private readonly LockedResourceService  $lockedResourceService,
         private readonly EntityManagerInterface $em,
         private readonly MyNotesRepository      $notesRepository,
+        private readonly PendoTrackService      $pendoTrackService,
     ) {
     }
 
@@ -132,6 +134,13 @@ class MyNotesAction extends AbstractController {
             LockedResource::TYPE_ENTITY,
             ModulesService::MODULE_NAME_NOTES
         );
+
+        $this->pendoTrackService->track('resource_lock_toggled', [
+            'resourceType'                => LockedResource::TYPE_ENTITY,
+            'moduleName'                  => ModulesService::MODULE_NAME_NOTES,
+            'isLocked'                    => $isLocked,
+            'rejectedBecauseParentLocked' => false,
+        ]);
 
         return BaseResponse::buildToggleLockResponse($isLocked)->toJsonResponse();
     }

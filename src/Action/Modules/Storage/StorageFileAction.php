@@ -5,6 +5,7 @@ namespace App\Action\Modules\Storage;
 use App\Attribute\ModuleAttribute;
 use App\Entity\FilesTags;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageFileService;
 use App\Services\Module\Storage\StorageService;
@@ -27,7 +28,8 @@ class StorageFileAction extends AbstractController
         private readonly StorageFileService     $storageFileService,
         private readonly LoggerInterface        $logger,
         private readonly EntityManagerInterface $em,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -108,6 +110,15 @@ class StorageFileAction extends AbstractController
         }
 
         $notRemovedPaths = $this->storageFileService->removeFiles($filePaths);
+
+        $this->pendoTrackService->track('storage_files_bulk_operation_completed', [
+            'operation'           => 'remove',
+            'storageModule'       => ModulesService::getUploadModuleNameByFilePath($dirPath),
+            'requestedFilesCount' => count($filePaths),
+            'succeededFilesCount' => count($filePaths) - count($notRemovedPaths),
+            'failedFilesCount'    => count($notRemovedPaths),
+        ]);
+
         if (!empty($notRemovedPaths)) {
             $msg = $this->translator->trans('module.storage.remove.couldNotRemoveSomeFiles') . ": " . json_encode($notRemovedPaths);
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
@@ -139,7 +150,16 @@ class StorageFileAction extends AbstractController
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
         }
 
-        $response = $this->storageService->moveFiles($currDirPath, $newDirPath, $filesNames);
+        $notMovedFilesNames = [];
+        $response           = $this->storageService->moveFiles($currDirPath, $newDirPath, $filesNames, $notMovedFilesNames);
+
+        $this->pendoTrackService->track('storage_files_bulk_operation_completed', [
+            'operation'           => 'move',
+            'storageModule'       => ModulesService::getUploadModuleNameByFilePath($currDirPath),
+            'requestedFilesCount' => count($filesNames),
+            'succeededFilesCount' => count($filesNames) - count($notMovedFilesNames),
+            'failedFilesCount'    => count($notMovedFilesNames),
+        ]);
 
         return $response->toJsonResponse();
     }

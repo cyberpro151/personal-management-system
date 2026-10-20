@@ -76,6 +76,26 @@ class FileUploadConfigurator
     }
 
     /**
+     * Returns the human-readable name of the upload target for given configuration identifier.
+     * Accepts any value, as it's used for already failed uploads too (for example: with malformed request).
+     *
+     * @param mixed $configurationId
+     *
+     * @return string
+     */
+    public function getUploadTargetName(mixed $configurationId): string
+    {
+        return match ($configurationId) {
+            self::PROFILE_PICTURE_UPLOAD     => "profile_picture",
+            self::IMAGE_STORAGE__ID          => "images",
+            self::VIDEOS_STORAGE_ID          => "videos",
+            self::FILES_STORAGE_ID           => "files",
+            self::MONTHLY_PAYMENTS_IMPORT_ID => "monthly_payments_import",
+            default                          => "unknown",
+        };
+    }
+
+    /**
      * @return UploadConfigurationDTO
      */
     private function buildProfilePictureUploadConfig(): UploadConfigurationDTO

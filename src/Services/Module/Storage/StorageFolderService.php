@@ -6,6 +6,7 @@ use App\Entity\FilesTags;
 use App\Entity\Modules\ModuleData;
 use App\Entity\System\LockedResource;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Traits\ExceptionLoggerAwareTrait;
 use DateTime;
@@ -22,7 +23,8 @@ class StorageFolderService
     public function __construct(
         private readonly TranslatorInterface    $translator,
         private readonly LoggerInterface        $logger,
-        private readonly EntityManagerInterface $entityManager
+        private readonly EntityManagerInterface $entityManager,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -94,7 +96,7 @@ class StorageFolderService
             return $this->moveFolder($oldDirPath, $newDirPath, $targetModuleName);
         }
 
-        return $this->copyFilesFromDir($oldDirPath, $newDirParentPath);
+        return $this->copyFilesFromDir($oldDirPath, $newDirParentPath, $targetModuleName);
     }
 
     /**
@@ -115,6 +117,7 @@ class StorageFolderService
                 'possibleError' => error_get_last(),
             ]);
 
+            $this->trackFolderMovedOrCopied('move', 'failed', $targetModuleName);
             return BaseResponse::buildInternalServerErrorResponse($msg);
         }
 
@@ -152,23 +155,27 @@ class StorageFolderService
                 ]);
 
                 $msg = $this->translator->trans('module.storage.moveFileOrDir.folderMovedDatabaseChangesFailed');
+                $this->trackFolderMovedOrCopied('move', 'db_update_failed', $targetModuleName);
                 return BaseResponse::buildInternalServerErrorResponse($msg);
             }
 
             $msg = $this->translator->trans('module.storage.moveFileOrDir.folderCouldNotBeMovedReverted');
+            $this->trackFolderMovedOrCopied('move', 'reverted', $targetModuleName);
             return BaseResponse::buildInternalServerErrorResponse($msg);
         }
 
+        $this->trackFolderMovedOrCopied('move', 'moved', $targetModuleName);
         return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.folderHaveBeenMoved'));
     }
 
     /**
-     * @param string $oldDirPath
-     * @param string $newDirPath
+     * @param string      $oldDirPath
+     * @param string      $newDirPath
+     * @param string|null $targetModuleName
      *
      * @return BaseResponse
      */
-    public function copyFilesFromDir(string $oldDirPath, string $newDirPath): BaseResponse
+    public function copyFilesFromDir(string $oldDirPath, string $newDirPath, ?string $targetModuleName = null): BaseResponse
     {
         $copiedFilePaths = [];
         $someFilesExisted = false;
@@ -206,6 +213,11 @@ class StorageFolderService
                 }
             }
 
+            $this->trackFolderMovedOrCopied('copy', 'reverted', $targetModuleName, [
+                'copiedFilesCount' => count($copiedFilePaths),
+                'someFilesExisted' => $someFilesExisted,
+            ]);
+
             return BaseResponse::buildOkResponse($this->translator->trans('module.storage.common.errorReverted'));
         }
 
@@ -221,10 +233,31 @@ class StorageFolderService
 
         $this->entityManager->flush();
 
+        $this->trackFolderMovedOrCopied('copy', 'copied', $targetModuleName, [
+            'copiedFilesCount' => count($copiedFilePaths),
+            'someFilesExisted' => $someFilesExisted,
+        ]);
+
         if ($someFilesExisted) {
             return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.filesHaveBeenCopiedButExisted'));
         }
 
         return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.filesHaveBeenCopied'));
+    }
+
+    /**
+     * @param string      $operation        - move / copy
+     * @param string      $outcome          - final state of the operation, known only once it got processed
+     * @param string|null $targetModuleName
+     * @param array       $extraProperties
+     */
+    private function trackFolderMovedOrCopied(string $operation, string $outcome, ?string $targetModuleName, array $extraProperties = []): void
+    {
+        $this->pendoTrackService->track('storage_folder_moved_or_copied', [
+            'operation'        => $operation,
+            'targetModuleName' => $targetModuleName,
+            'outcome'          => $outcome,
+            ...$extraProperties,
+        ]);
     }
 }

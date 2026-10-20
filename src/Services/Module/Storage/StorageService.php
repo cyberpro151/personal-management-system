@@ -79,13 +79,15 @@ class StorageService
      * @param string $oldDirPath
      * @param string $newDirPath
      * @param array  $filesNames
+     * @param array  $failedFiles - filled with names of the files which could not be moved
      *
      * @return BaseResponse
      * @throws Exception
      */
-    public function moveFiles(string $oldDirPath, string $newDirPath, array $filesNames = []): BaseResponse
+    public function moveFiles(string $oldDirPath, string $newDirPath, array $filesNames = [], array &$failedFiles = []): BaseResponse
     {
         if ($oldDirPath === $newDirPath) {
+            $failedFiles = $filesNames;
             return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.storage.moveFileOrDir.oldPathEqualsNewPath'));
         }
 

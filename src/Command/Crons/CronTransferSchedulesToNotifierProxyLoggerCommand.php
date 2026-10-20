@@ -7,6 +7,7 @@ use App\Repository\Modules\Schedules\MyScheduleReminderRepository;
 use App\Repository\Modules\Schedules\MyScheduleRepository;
 use App\Response\BaseResponse;
 use App\Services\External\NotifierProxyLoggerService;
+use App\Services\External\PendoTrackService;
 use App\Traits\ExceptionLoggerAwareTrait;
 use Exception;
 use GuzzleHttp\Exception\GuzzleException;
@@ -42,6 +43,7 @@ class CronTransferSchedulesToNotifierProxyLoggerCommand extends Command
         private readonly MyScheduleReminderRepository $scheduleReminderRepository,
         private readonly MyScheduleRepository $myScheduleRepository,
         private readonly LoggerInterface $logger,
+        private readonly PendoTrackService $pendoTrackService,
     )
     {
         parent::__construct(self::$defaultName);
@@ -100,6 +102,15 @@ class CronTransferSchedulesToNotifierProxyLoggerCommand extends Command
                         $reminder = $this->scheduleReminderRepository->findOneById($incomingScheduleDTO->getReminderId());
                         $reminder->setProcessed(true);
                         $this->scheduleReminderRepository->saveReminder($reminder);
+
+                        $this->pendoTrackService->track('schedule_reminder_sent', [
+                            'scheduleId'             => (int) $incomingScheduleDTO->getId(),
+                            'reminderId'             => (int) $incomingScheduleDTO->getReminderId(),
+                            'daysDiff'               => $incomingScheduleDTO->getDaysDiff(),
+                            'deliveredChannels'      => [$this->channel],
+                            'deliveredChannelsCount' => 1,
+                            'transferChannel'        => $this->channel,
+                        ]);
                     }
                 }
             }

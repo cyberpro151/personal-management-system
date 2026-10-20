@@ -8,6 +8,7 @@ use App\Entity\Modules\ModuleData;
 use App\Entity\System\LockedResource;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageFolderService;
@@ -40,7 +41,8 @@ class StorageFolderAction extends AbstractController
         private readonly LoggerInterface        $logger,
         private readonly LockedResourceService  $lockedResourceService,
         private readonly EntityManagerInterface $entityManager,
-        private readonly StorageFolderService   $storageFolderService
+        private readonly StorageFolderService   $storageFolderService,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -181,11 +183,27 @@ class StorageFolderAction extends AbstractController
             $isLocked = $this->lockedResourceService->isResourceLocked($checkedPath, LockedResource::TYPE_DIRECTORY, $moduleName);
             if ($isLocked && $checkedPath !== $dir) {
                 $msg = $this->translator->trans('module.storage.lock.parentDirIsLocked', ['{{path}}' => $checkedPath]);
+
+                $this->pendoTrackService->track('resource_lock_toggled', [
+                    'resourceType'                => LockedResource::TYPE_DIRECTORY,
+                    'moduleName'                  => $moduleName,
+                    'isLocked'                    => true,
+                    'rejectedBecauseParentLocked' => true,
+                ]);
+
                 return BaseResponse::buildToggleLockResponse(true, $msg, Response::HTTP_BAD_REQUEST)->toJsonResponse();
             }
         }
 
         $isLocked = $this->lockedResourceService->toggleLock($dir, LockedResource::TYPE_DIRECTORY, $moduleName);
+
+        $this->pendoTrackService->track('resource_lock_toggled', [
+            'resourceType'                => LockedResource::TYPE_DIRECTORY,
+            'moduleName'                  => $moduleName,
+            'isLocked'                    => $isLocked,
+            'rejectedBecauseParentLocked' => false,
+        ]);
+
         $msg = $this->translator->trans('module.storage.lock.isLocked');
         if (!$isLocked) {
             $msg = $this->translator->trans('module.storage.lock.isUnlocked');

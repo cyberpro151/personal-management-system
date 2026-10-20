@@ -8,6 +8,7 @@ use App\DTO\Settings\SettingNotificationDto;
 use App\Entity\Modules\Schedules\MyScheduleReminder;
 use App\Repository\Modules\Schedules\MyScheduleRepository;
 use App\Services\External\DiscordService;
+use App\Services\External\PendoTrackService;
 use App\Services\Settings\SettingsLoader;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
@@ -40,6 +41,7 @@ class SendRemindersCommand extends Command
      * @param ParameterBagInterface  $parameterBag
      * @param DiscordService         $discordService
      * @param EntityManagerInterface $entityManager
+     * @param PendoTrackService      $pendoTrackService
      */
     public function __construct(
         private readonly MyScheduleRepository   $myScheduleRepository,
@@ -48,6 +50,7 @@ class SendRemindersCommand extends Command
         readonly ParameterBagInterface          $parameterBag,
         private readonly DiscordService         $discordService,
         private readonly EntityManagerInterface $entityManager,
+        private readonly PendoTrackService      $pendoTrackService,
     ) {
         parent::__construct(self::$defaultName);
         $this->reminderUserName = $parameterBag->get('project.name') . " Reminder";
@@ -82,13 +85,22 @@ class SendRemindersCommand extends Command
             foreach ($incomingSchedulesDTOS as $scheduleDto) {
                 $title = "Schedule: {$scheduleDto->getTitle()} - {$scheduleDto->getDate()}";
                 $notificationDto = new NotificationDto(title: $title, message: $scheduleDto->getBody(), username: $this->reminderUserName);
-                $this->handleNotifications($notificationDto, $notificationConfig->getConfig());
+                $deliveredChannels = $this->handleNotifications($notificationDto, $notificationConfig->getConfig());
 
                 $reminder = $this->entityManager->find(MyScheduleReminder::class, $scheduleDto->getReminderId());
                 $reminder->setProcessed(true);
 
                 $this->entityManager->persist($reminder);
                 $this->entityManager->flush();
+
+                // reminder is processed even if no channel has delivered it, schedule title / body are never sent
+                $this->pendoTrackService->track('schedule_reminder_sent', [
+                    'scheduleId'             => (int) $scheduleDto->getId(),
+                    'reminderId'             => (int) $scheduleDto->getReminderId(),
+                    'daysDiff'               => $scheduleDto->getDaysDiff(),
+                    'deliveredChannels'      => $deliveredChannels,
+                    'deliveredChannelsCount' => count($deliveredChannels),
+                ]);
             }
         } catch (Exception $e) {
             $this->logger->critical($e->getMessage(), ['exception' => $e]);
@@ -102,10 +114,12 @@ class SendRemindersCommand extends Command
      * @param NotificationDto $notificationDto
      * @param array           $notificationConfigs
      *
+     * @return string[] - names of the configs over which the notification has been sent
      * @throws GuzzleException
      */
-    private function handleNotifications(NotificationDto $notificationDto, array $notificationConfigs): void
+    private function handleNotifications(NotificationDto $notificationDto, array $notificationConfigs): array
     {
+        $deliveredChannels = [];
         foreach ($notificationConfigs as $config) {
             if (!$config->isActiveForReminder()) {
                 continue;
@@ -120,9 +134,12 @@ class SendRemindersCommand extends Command
                 case ConfigDto::NAME_DISCORD_WEBHOOK:
                     $notificationDto->setUrl($config->getValue());
                     $this->discordService->sendWebhookMessage($notificationDto);
+                    $deliveredChannels[] = $config->getName();
                 break;
             };
         }
+
+        return $deliveredChannels;
     }
 
 }

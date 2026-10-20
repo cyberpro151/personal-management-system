@@ -8,6 +8,7 @@ use App\Exception\File\UploadValidationException;
 use App\Response\Base\BaseResponse;
 use App\Response\UploadedFile\UploadConfigurationResponse;
 use App\Response\UploadedFile\UploadResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Services\Files\Upload\FileUploadConfigurator;
 use App\Services\Files\Upload\FileUploadService;
@@ -38,7 +39,8 @@ class UploadedFileAction extends AbstractController
         private readonly LoggerInterface             $logger,
         private readonly FileUploadConfigurator      $fileUploadConfigurator,
         private readonly TranslatorInterface         $translator,
-        private readonly TemporaryFileHandlerService $temporaryFileHandlerService
+        private readonly TemporaryFileHandlerService $temporaryFileHandlerService,
+        private readonly PendoTrackService           $pendoTrackService
     ) {
     }
 
@@ -70,6 +72,7 @@ class UploadedFileAction extends AbstractController
 
         $errorMessage = $this->translator->trans('file.upload.msg.uploadError');
         $isError      = false;
+        $errorType    = null;
         $status       = UploadStatusEnum::SUCCESS;
         $response     = UploadResponse::buildOkResponse();
 
@@ -93,12 +96,14 @@ class UploadedFileAction extends AbstractController
                 unlink($filePath);
             }
         } catch (UploadValidationException) {
-            $status  = UploadStatusEnum::ERROR;
-            $isError = true;
+            $status    = UploadStatusEnum::ERROR;
+            $isError   = true;
+            $errorType = 'validation';
         } catch (Exception|TypeError $e) {
             $status = UploadStatusEnum::ERROR;
             $this->logException($e);
-            $isError = true;
+            $isError   = true;
+            $errorType = 'exception';
         }
 
         if ($isError) {
@@ -110,6 +115,20 @@ class UploadedFileAction extends AbstractController
         }
 
         $response->setStatus($status->value);
+
+        // file name is not sent as it might contain personal data,
+        // request values are type-checked because the upload could have failed due to malformed request
+        $this->pendoTrackService->track('file_upload_completed', [
+            'status'             => $status->value,
+            'uploadConfigId'     => is_string($uploadConfigId) ? $uploadConfigId : null,
+            'uploadTarget'       => $this->fileUploadConfigurator->getUploadTargetName($uploadConfigId),
+            'fileExtension'      => is_string($fileName) ? strtolower(pathinfo($fileName, PATHINFO_EXTENSION)) : null,
+            'fileSizeBytes'      => is_numeric($fileSizeBytes) ? (int) $fileSizeBytes : null,
+            'tagsCount'          => is_array($tags) ? count($tags) : 0,
+            'hasUserDefinedName' => !empty($userDefinedName),
+            'errorType'          => $errorType,
+            'isDemo'             => EnvReader::isDemo(),
+        ]);
 
         return $response->toJsonResponse();
     }

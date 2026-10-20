@@ -5,6 +5,7 @@ namespace App\Action\Modules\System\Settings\Modules;
 use App\Attribute\ModuleAttribute;
 use App\DTO\Settings\Lock\Subsettings\SettingsModuleLockDTO;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\Settings\SettingsLockModuleService;
@@ -26,11 +27,13 @@ class ModulesLockAction extends AbstractController {
      * @param SettingsSaver             $settingsSaverService
      * @param SettingsLockModuleService $settingsLockModuleService
      * @param LockedResourceService     $lockedResourceService
+     * @param PendoTrackService         $pendoTrackService
      */
     public function __construct(
         private readonly SettingsSaver  $settingsSaverService,
         private readonly SettingsLockModuleService $settingsLockModuleService,
-        private readonly LockedResourceService $lockedResourceService
+        private readonly LockedResourceService $lockedResourceService,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -87,6 +90,19 @@ class ModulesLockAction extends AbstractController {
         }
 
         $this->settingsSaverService->saveModulesLockSettings($dtos);
+
+        $lockedModules = [];
+        foreach ($dtos as $lockDto) {
+            if ($lockDto->isLocked()) {
+                $lockedModules[] = $lockDto->getName();
+            }
+        }
+
+        $this->pendoTrackService->track('module_lock_settings_updated', [
+            'lockedModules'        => $lockedModules,
+            'lockedModulesCount'   => count($lockedModules),
+            'unlockedModulesCount' => count($dtos) - count($lockedModules),
+        ]);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
     }

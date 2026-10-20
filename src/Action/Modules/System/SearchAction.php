@@ -8,6 +8,7 @@ use App\Entity\Modules\Notes\MyNotes;
 use App\Entity\System\LockedResource;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageService;
 use App\Services\System\LockedResourceService;
@@ -27,7 +28,8 @@ class SearchAction extends AbstractController {
     public function __construct(
         private readonly StorageService $storageService,
         private readonly EntityManagerInterface $entityManager,
-        private readonly LockedResourceService $lockedResourceService
+        private readonly LockedResourceService $lockedResourceService,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -46,9 +48,13 @@ class SearchAction extends AbstractController {
             throw new LogicException("Query cannot be empty");
         }
 
+        $tagMatchedFilesCount = 0;
+
         $entriesData = [];
-        $entriesData = $this->searchInStorage($query, $entriesData);
+        $entriesData = $this->searchInStorage($query, $entriesData, $tagMatchedFilesCount);
         $entriesData = $this->searchInNotes($query, $entriesData);
+
+        $this->trackSearchCompleted($query, $entriesData, $tagMatchedFilesCount);
 
         $response = BaseResponse::buildOkResponse();
         $response->setAllRecordsData($entriesData);
@@ -59,13 +65,14 @@ class SearchAction extends AbstractController {
     /**
      * @param string $query
      * @param array  $entriesData
+     * @param int    $tagMatchedFilesCount - count of found files which tags are matching the query
      *
      * @return array[]
      * @throws Exception
      *
      * @throws \Doctrine\DBAL\Exception
      */
-    public function searchInStorage(string $query, array $entriesData): array
+    public function searchInStorage(string $query, array $entriesData, int &$tagMatchedFilesCount = 0): array
     {
         $queryParts     = explode(" ", $query);
         $cartesianQuery = [];
@@ -104,6 +111,10 @@ class SearchAction extends AbstractController {
                         $fileData['dir'],
                     ],
                 ];
+
+                if ($hasTag) {
+                    $tagMatchedFilesCount++;
+                }
             }
 
             $entriesData[$enum->value] = $matchingFiles;
@@ -141,6 +152,41 @@ class SearchAction extends AbstractController {
         $entriesData['notes'] = $notesData;
 
         return $entriesData;
+    }
+
+    /**
+     * Tracks the search outcome, the query itself is not sent as it might contain personal data
+     *
+     * @param string $query
+     * @param array  $entriesData
+     * @param int    $tagMatchedFilesCount
+     *
+     * @throws Exception
+     * @throws \Doctrine\DBAL\Exception
+     */
+    private function trackSearchCompleted(string $query, array $entriesData, int $tagMatchedFilesCount): void
+    {
+        // locked notes module makes the search return no results at all (including the storage ones)
+        $isNotesModuleLocked = $this->lockedResourceService->isResourceLocked('', LockedResource::TYPE_MODULE, ModulesService::MODULE_NAME_NOTES);
+
+        $filesResultsCount  = count($entriesData[StorageModuleEnum::FILES->value] ?? []);
+        $imagesResultsCount = count($entriesData[StorageModuleEnum::IMAGES->value] ?? []);
+        $videosResultsCount = count($entriesData[StorageModuleEnum::VIDEOS->value] ?? []);
+        $notesResultsCount  = count($entriesData['notes'] ?? []);
+        $totalResultsCount  = $filesResultsCount + $imagesResultsCount + $videosResultsCount + $notesResultsCount;
+
+        $this->pendoTrackService->track('global_search_completed', [
+            'queryLength'          => mb_strlen($query),
+            'queryTermCount'       => count(preg_split('#\s+#', trim($query), -1, PREG_SPLIT_NO_EMPTY)),
+            'totalResultsCount'    => $totalResultsCount,
+            'filesResultsCount'    => $filesResultsCount,
+            'imagesResultsCount'   => $imagesResultsCount,
+            'videosResultsCount'   => $videosResultsCount,
+            'notesResultsCount'    => $notesResultsCount,
+            'tagMatchedFilesCount' => $isNotesModuleLocked ? 0 : $tagMatchedFilesCount,
+            'hasResults'           => $totalResultsCount > 0,
+            'notesModuleLocked'    => $isNotesModuleLocked,
+        ]);
     }
 
 }

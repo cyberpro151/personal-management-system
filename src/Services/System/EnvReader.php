@@ -10,6 +10,10 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 class EnvReader extends AbstractController {
 
     const APP_DEFAULT_NPL_RECEIVER_EMAILS = "APP_DEFAULT_NPL_RECEIVER_EMAILS";
+    const PENDO_TRACK_EVENT_SECRET        = "PENDO_TRACK_EVENT_SECRET";
+    const PENDO_DATA_HOST                 = "PENDO_DATA_HOST";
+
+    private const DEFAULT_PENDO_DATA_HOST = "data.pendo.io";
 
     public static function getUploadDir() {
         return $_ENV['UPLOAD_DIR'];
@@ -49,6 +53,32 @@ class EnvReader extends AbstractController {
     {
         $emailsString = Utils::getRealArrayForStringArray($_ENV[self::APP_DEFAULT_NPL_RECEIVER_EMAILS]);
         return $emailsString;
+    }
+
+    /**
+     * Returns the key used for sending the server side track events to Pendo,
+     * empty string means that the tracking is disabled
+     *
+     * @return string
+     */
+    public static function getPendoTrackEventSecret(): string
+    {
+        return (string) ($_ENV[self::PENDO_TRACK_EVENT_SECRET] ?? "");
+    }
+
+    /**
+     * Returns the Pendo host to which the track events are sent
+     *
+     * @return string
+     */
+    public static function getPendoDataHost(): string
+    {
+        $dataHost = (string) ($_ENV[self::PENDO_DATA_HOST] ?? "");
+        if (empty($dataHost)) {
+            return self::DEFAULT_PENDO_DATA_HOST;
+        }
+
+        return $dataHost;
     }
 
     /**

@@ -8,6 +8,7 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Goals\MyGoalsPayments;
 use App\Repository\Modules\Goals\MyGoalsPaymentsRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -25,7 +26,8 @@ class GoalsPaymentsAction extends AbstractController {
 
     public function __construct(
         private readonly MyGoalsPaymentsRepository $goalsPaymentsRepository,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -112,6 +114,9 @@ class GoalsPaymentsAction extends AbstractController {
         $start = new DateTime($startString);
         $end   = new DateTime($endString);
 
+        // previously saved amount (nothing collected yet for new goal), must be taken before it gets overwritten
+        $previousCollected = $payment->getMoneyCollected() ?? 0;
+
         $payment->setName($name);
         $payment->setMoneyGoal($goal);
         $payment->setMoneyCollected($collected);
@@ -121,5 +126,28 @@ class GoalsPaymentsAction extends AbstractController {
 
         $this->em->persist($payment);
         $this->em->flush();
+
+        if ($previousCollected < $payment->getMoneyGoal() && $payment->getMoneyCollected() >= $payment->getMoneyGoal()) {
+            $this->trackSavingsGoalReached($payment, $start, $end);
+        }
+    }
+
+    /**
+     * @param MyGoalsPayments $payment
+     * @param DateTime        $start
+     * @param DateTime        $end
+     */
+    private function trackSavingsGoalReached(MyGoalsPayments $payment, DateTime $start, DateTime $end): void
+    {
+        $today              = new DateTime('today');
+        $daysBeforeDeadline = (int) $today->diff($end)->format('%r%a');
+
+        $this->pendoTrackService->track('savings_goal_reached', [
+            'goalPaymentId'            => $payment->getId(),
+            'reachedBeforeDeadline'    => $daysBeforeDeadline >= 0,
+            'daysSinceCollectionStart' => (int) $start->diff($today)->format('%r%a'),
+            'daysBeforeDeadline'       => $daysBeforeDeadline,
+            'displayOnDashboard'       => (bool) $payment->getDisplayOnDashboard(),
+        ]);
     }
 }

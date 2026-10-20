@@ -7,6 +7,7 @@ use App\DTO\Settings\Notifications\ConfigDto;
 use App\DTO\Settings\SettingNotificationDto;
 use App\Entity\Setting;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\Settings\SettingsLoader;
@@ -23,12 +24,14 @@ use Symfony\Component\Routing\Annotation\Route;
 class ConfigAction extends AbstractController {
 
     /**
-     * @param SettingsSaver  $settingsSaverService
-     * @param SettingsLoader $settingsLoaderService
+     * @param SettingsSaver     $settingsSaverService
+     * @param SettingsLoader    $settingsLoaderService
+     * @param PendoTrackService $pendoTrackService
      */
     public function __construct(
-        private readonly SettingsSaver  $settingsSaverService,
-        private readonly SettingsLoader $settingsLoaderService,
+        private readonly SettingsSaver     $settingsSaverService,
+        private readonly SettingsLoader    $settingsLoaderService,
+        private readonly PendoTrackService $pendoTrackService,
     ) {
     }
 
@@ -83,6 +86,25 @@ class ConfigAction extends AbstractController {
         }
 
         $this->settingsSaverService->saveNotificationsConfigSettings($dtos);
+
+        // only names are tracked, never the config value as it's a credential (webhook url)
+        $configuredChannels        = [];
+        $activeForReminderChannels = [];
+        foreach ($dtos as $configDto) {
+            if (!empty($configDto->getValue())) {
+                $configuredChannels[] = $configDto->getName();
+            }
+
+            if ($configDto->isActiveForReminder()) {
+                $activeForReminderChannels[] = $configDto->getName();
+            }
+        }
+
+        $this->pendoTrackService->track('reminder_notifications_configured', [
+            'configuredChannels'        => $configuredChannels,
+            'activeForReminderChannels' => $activeForReminderChannels,
+            'configsCount'              => count($dtos),
+        ]);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
     }
