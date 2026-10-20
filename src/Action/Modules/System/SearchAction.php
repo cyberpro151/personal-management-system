@@ -8,6 +8,7 @@ use App\Entity\Modules\Notes\MyNotes;
 use App\Entity\System\LockedResource;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageService;
 use App\Services\System\LockedResourceService;
@@ -27,7 +28,8 @@ class SearchAction extends AbstractController {
     public function __construct(
         private readonly StorageService $storageService,
         private readonly EntityManagerInterface $entityManager,
-        private readonly LockedResourceService $lockedResourceService
+        private readonly LockedResourceService $lockedResourceService,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -49,6 +51,8 @@ class SearchAction extends AbstractController {
         $entriesData = [];
         $entriesData = $this->searchInStorage($query, $entriesData);
         $entriesData = $this->searchInNotes($query, $entriesData);
+
+        $this->trackSearchCompleted($query, $entriesData);
 
         $response = BaseResponse::buildOkResponse();
         $response->setAllRecordsData($entriesData);
@@ -141,6 +145,46 @@ class SearchAction extends AbstractController {
         $entriesData['notes'] = $notesData;
 
         return $entriesData;
+    }
+
+    /**
+     * Pendo: the results are only known once the backend has searched the storage modules and notes.
+     * The query itself is not sent, as it can contain sensitive data
+     *
+     * @param string $query
+     * @param array  $entriesData
+     */
+    private function trackSearchCompleted(string $query, array $entriesData): void
+    {
+        $this->pendoTrackService->trackForRequestUser('global_search_completed', function () use ($query, $entriesData): array {
+            $notesCount  = count($entriesData['notes'] ?? []);
+            $imagesCount = count($entriesData[StorageModuleEnum::IMAGES->value] ?? []);
+            $filesCount  = count($entriesData[StorageModuleEnum::FILES->value] ?? []);
+            $videosCount = count($entriesData[StorageModuleEnum::VIDEOS->value] ?? []);
+            $totalCount  = $notesCount + $imagesCount + $filesCount + $videosCount;
+
+            // files are matched either by name or by tag, so returned file without the query in its name got matched by tag
+            $tagMatchedFilesCount = 0;
+            foreach (StorageModuleEnum::cases() as $enum) {
+                foreach ($entriesData[$enum->value] ?? [] as $fileData) {
+                    if (!str_contains(strtolower($fileData['name']), strtolower($query))) {
+                        $tagMatchedFilesCount++;
+                    }
+                }
+            }
+
+            return [
+                'query_length'            => mb_strlen($query),
+                'query_term_count'        => count(array_filter(explode(" ", $query), fn (string $term) => $term !== "")),
+                'total_results_count'     => $totalCount,
+                'notes_results_count'     => $notesCount,
+                'images_results_count'    => $imagesCount,
+                'files_results_count'     => $filesCount,
+                'videos_results_count'    => $videosCount,
+                'tag_matched_files_count' => $tagMatchedFilesCount,
+                'has_results'             => $totalCount > 0,
+            ];
+        });
     }
 
 }

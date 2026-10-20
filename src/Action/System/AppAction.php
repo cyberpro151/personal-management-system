@@ -5,12 +5,16 @@ namespace App\Action\System;
 
 
 use App\Attribute\JwtAuthenticationDisabledAttribute;
+use App\DTO\Settings\Lock\Subsettings\SettingsModuleLockDTO;
 use App\Entity\User;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\RequestService;
 use App\Services\Security\JwtAuthenticationService;
 use App\Services\Security\PasswordHashingService;
+use App\Services\Settings\SettingsLockModuleService;
 use App\Services\Storage\RequestSessionStorage;
+use App\Services\System\EnvReader;
 use App\Services\System\SecurityService;
 use App\Services\TypeProcessor\ArrayHandler;
 use Doctrine\ORM\EntityManagerInterface;
@@ -30,6 +34,7 @@ class AppAction extends AbstractController
         private readonly EntityManagerInterface   $em,
         private readonly PasswordHashingService   $passwordHashingService,
         private readonly TranslatorInterface      $translator,
+        private readonly PendoTrackService        $pendoTrackService,
     ) {
     }
 
@@ -39,13 +44,14 @@ class AppAction extends AbstractController
      * - set system in lock state where locked resources are hidden,
      *
      * @Route("/toggle-resources-lock", name="system-toggle-resources-lock", methods="POST")
-     * @param Request         $request
-     * @param SecurityService $securityService
+     * @param Request                   $request
+     * @param SecurityService           $securityService
+     * @param SettingsLockModuleService $settingsLockModuleService
      *
      * @return JsonResponse
      * @throws Exception
      */
-    public function toggleResourcesLock(Request $request, SecurityService $securityService): Response
+    public function toggleResourcesLock(Request $request, SecurityService $securityService, SettingsLockModuleService $settingsLockModuleService): Response
     {
         RequestSessionStorage::$IS_TOGGLE_LOCK_CALL = true;
 
@@ -61,6 +67,16 @@ class AppAction extends AbstractController
 
         $userPassword    = $user->getLockPassword();
         $isPasswordValid = $securityService->isPasswordValid($user, $userPassword, $password);
+
+        // Pendo: the unlock outcome is only known once the backend has validated the lock password
+        $this->pendoTrackService->track('system_unlock_completed', $user->getId(), fn () => [
+            'outcome'              => $isPasswordValid ? 'unlocked' : 'invalid_password',
+            'locked_modules_count' => count(array_filter(
+                $settingsLockModuleService->getSettingsModuleLockDtos(),
+                fn (SettingsModuleLockDTO $moduleLock) => $moduleLock->isLocked()
+            )),
+        ]);
+
         if (!$isPasswordValid) {
             $message = $this->translator->trans('security.lockResource.invalidPassword');
             return BaseResponse::buildBadRequestErrorResponse($message)->toJsonResponse();
@@ -130,6 +146,12 @@ class AppAction extends AbstractController
 
         $this->em->persist($user);
         $this->em->flush();
+
+        // Pendo: the account only exists once all the backend validations have passed, and it got saved
+        $this->pendoTrackService->track('user_registered', $user->getId(), fn () => [
+            'user_id'          => $user->getId(),
+            'is_demo_instance' => EnvReader::isDemo(),
+        ]);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
     }

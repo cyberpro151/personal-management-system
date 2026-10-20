@@ -8,6 +8,7 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Payments\MyPaymentsMonthly;
 use App\Entity\Modules\Payments\MyPaymentsSettings;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -21,6 +22,7 @@ use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Annotation\Route;
 use Symfony\Contracts\Translation\TranslatorInterface;
+use Throwable;
 
 #[Route("/module/payment/monthly", name: "module.payment.monthly.")]
 #[ModuleAttribute(values: ["name" => ModulesService::MODULE_NAME_PAYMENTS])]
@@ -31,7 +33,8 @@ class MyPaymentsMonthlyAction extends AbstractController {
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface        $logger,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -114,6 +117,8 @@ class MyPaymentsMonthlyAction extends AbstractController {
         $dataArray = $contentArray['data'] ?? [];
 
         if (empty($dataArray)) {
+            $this->trackImportCompleted('no_rows', []);
+
             $msg = $this->translator->trans('module.monthly_payments.import.message.noImportData');
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
         }
@@ -128,13 +133,47 @@ class MyPaymentsMonthlyAction extends AbstractController {
         } catch (Exception $e) {
             $this->em->rollback();
             $this->logException($e);
+            $this->trackImportCompleted('failed', $dataArray, $e);
 
             $msg = $this->translator->trans('module.monthly_payments.import.message.fail');
             return BaseResponse::buildInternalServerErrorResponse($msg)->toJsonResponse();
         }
 
+        $this->trackImportCompleted('success', $dataArray);
+
         $msg = $this->translator->trans('module.monthly_payments.import.message.success');
         return BaseResponse::buildOkResponse($msg)->toJsonResponse();
+    }
+
+    /**
+     * Pendo: the import outcome is only known once the backend has processed all the rows
+     *
+     * @param string         $outcome
+     * @param mixed          $rows - as delivered in request
+     * @param Throwable|null $throwable
+     */
+    private function trackImportCompleted(string $outcome, mixed $rows, ?Throwable $throwable = null): void
+    {
+        $this->pendoTrackService->trackForRequestUser('monthly_payments_import_completed', function () use ($outcome, $rows, $throwable): array {
+            $rows         = is_array($rows) ? $rows : [];
+            $paymentDates = [];
+            foreach (array_filter(array_column($rows, 'date')) as $date) {
+                try {
+                    $paymentDates[] = (new DateTime($date))->format('Y-m-d');
+                } catch (Throwable) {
+                    // invalid dates are already handled by the import itself
+                }
+            }
+
+            return [
+                'row_count'                   => count($rows),
+                'outcome'                     => $outcome,
+                'distinct_payment_type_count' => count(array_unique(array_column($rows, 'typeId'))),
+                'earliest_payment_date'       => empty($paymentDates) ? null : min($paymentDates),
+                'latest_payment_date'         => empty($paymentDates) ? null : max($paymentDates),
+                'error_type'                  => is_null($throwable) ? null : PendoTrackService::getErrorType($throwable),
+            ];
+        });
     }
 
     /**

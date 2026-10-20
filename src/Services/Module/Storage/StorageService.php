@@ -79,21 +79,26 @@ class StorageService
      * @param string $oldDirPath
      * @param string $newDirPath
      * @param array  $filesNames
+     * @param array  $failedFiles  - gets filled with names of the files that could not be moved
+     * @param array  $renamedFiles - gets filled with names of the files moved under new name, due to name conflict
      *
      * @return BaseResponse
      * @throws Exception
      */
-    public function moveFiles(string $oldDirPath, string $newDirPath, array $filesNames = []): BaseResponse
+    public function moveFiles(string $oldDirPath, string $newDirPath, array $filesNames = [], array &$failedFiles = [], array &$renamedFiles = []): BaseResponse
     {
         if ($oldDirPath === $newDirPath) {
             return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.storage.moveFileOrDir.oldPathEqualsNewPath'));
         }
 
-        $failedFiles = [];
+        $failedFiles  = [];
+        $renamedFiles = [];
         foreach ($filesNames as $fileName) {
             $oldFilePath = $oldDirPath . DIRECTORY_SEPARATOR . $fileName;
             $newFilePath = $newDirPath . DIRECTORY_SEPARATOR . $fileName;
-            if (file_exists($newFilePath)) {
+
+            $hasNameConflict = file_exists($newFilePath);
+            if ($hasNameConflict) {
                 $nameWithoutExt = pathinfo($fileName, PATHINFO_FILENAME);
                 $extension      = pathinfo($fileName, PATHINFO_EXTENSION);
                 $dateTimeStamp  = (new DateTime())->format('Y_m_d_H_i_s');
@@ -110,6 +115,8 @@ class StorageService
                 ]);
 
                 $failedFiles[] = $fileName;
+            } elseif ($hasNameConflict) {
+                $renamedFiles[] = $fileName;
             }
 
             $tags = $this->entityManager->getRepository(FilesTags::class)->getFileTagsEntityByFileFullPath($oldFilePath);

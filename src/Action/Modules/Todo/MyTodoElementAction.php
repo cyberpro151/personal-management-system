@@ -7,6 +7,7 @@ use App\Entity\Modules\Todo\MyTodo;
 use App\Entity\Modules\Todo\MyTodoElement;
 use App\Repository\Modules\Todo\MyTodoRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -25,7 +26,8 @@ class MyTodoElementAction extends AbstractController {
 
     public function __construct(
         private readonly MyTodoRepository       $todoRepository,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -89,6 +91,8 @@ class MyTodoElementAction extends AbstractController {
             $element = new MyTodoElement();
         }
 
+        $wasTodoCompleted = (bool)$todo->getCompleted();
+
         $dataArray   = RequestService::tryFromJsonBody($request);
         $isCompleted = ArrayHandler::get($dataArray, 'isCompleted', true, false);
         $name        = ArrayHandler::get($dataArray, 'name', allowEmpty: false);
@@ -106,6 +110,17 @@ class MyTodoElementAction extends AbstractController {
 
         $this->em->persist($todo);
         $this->em->flush();
+
+        // Pendo: only the backend knows if saving the element has completed the whole list, tracking the transition only
+        if (!$wasTodoCompleted && $areAllElementsDone) {
+            $this->pendoTrackService->trackForRequestUser('todo_list_completed', fn () => [
+                'todo_id'            => $todo->getId(),
+                'element_count'      => $this->em->getRepository(MyTodoElement::class)->count(['myTodo' => $todo, 'deleted' => false]),
+                'related_module'     => $todo->getModule()?->getName() ?? 'none',
+                'has_linked_issue'   => !is_null($todo->getMyIssue()),
+                'shown_on_dashboard' => (bool)$todo->getDisplayOnDashboard(),
+            ]);
+        }
     }
 
 }

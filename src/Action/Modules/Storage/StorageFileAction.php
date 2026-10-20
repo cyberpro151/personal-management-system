@@ -5,6 +5,7 @@ namespace App\Action\Modules\Storage;
 use App\Attribute\ModuleAttribute;
 use App\Entity\FilesTags;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageFileService;
 use App\Services\Module\Storage\StorageService;
@@ -27,7 +28,8 @@ class StorageFileAction extends AbstractController
         private readonly StorageFileService     $storageFileService,
         private readonly LoggerInterface        $logger,
         private readonly EntityManagerInterface $em,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -108,6 +110,8 @@ class StorageFileAction extends AbstractController
         }
 
         $notRemovedPaths = $this->storageFileService->removeFiles($filePaths);
+        $this->trackBulkActionCompleted('remove', $dirPath, count($filePaths), count($notRemovedPaths));
+
         if (!empty($notRemovedPaths)) {
             $msg = $this->translator->trans('module.storage.remove.couldNotRemoveSomeFiles') . ": " . json_encode($notRemovedPaths);
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
@@ -139,9 +143,48 @@ class StorageFileAction extends AbstractController
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
         }
 
-        $response = $this->storageService->moveFiles($currDirPath, $newDirPath, $filesNames);
+        $failedFiles  = [];
+        $renamedFiles = [];
+        $response     = $this->storageService->moveFiles($currDirPath, $newDirPath, $filesNames, $failedFiles, $renamedFiles);
+
+        // no file is failing when the move gets rejected upfront (e.g. target folder is the current one)
+        $isRejected = !$response->isSuccess() && empty($failedFiles);
+        $this->trackBulkActionCompleted('move', $currDirPath, count($filesNames), count($failedFiles), $isRejected, count($renamedFiles));
 
         return $response->toJsonResponse();
+    }
+
+    /**
+     * Pendo: the number of actually affected files is only known once the backend has processed the files
+     *
+     * @param string   $action
+     * @param string   $dirPath
+     * @param int      $requestedCount
+     * @param int      $failedCount
+     * @param bool     $isRejected
+     * @param int|null $renamedOnConflictCount
+     */
+    private function trackBulkActionCompleted(
+        string $action,
+        string $dirPath,
+        int    $requestedCount,
+        int    $failedCount,
+        bool   $isRejected = false,
+        ?int   $renamedOnConflictCount = null
+    ): void {
+        $this->pendoTrackService->trackForRequestUser('storage_files_bulk_action_completed', fn () => [
+            'action'                    => $action,
+            'module'                    => ModulesService::getUploadModuleNameByFilePath($dirPath) ?? 'unknown',
+            'requested_count'           => $requestedCount,
+            'failed_count'              => $failedCount,
+            'renamed_on_conflict_count' => $renamedOnConflictCount,
+            'outcome'                   => match (true) {
+                $isRejected                    => 'rejected',
+                $failedCount === 0             => 'success',
+                $failedCount < $requestedCount => 'partial_failure',
+                default                        => 'failed',
+            },
+        ]);
     }
 
 }

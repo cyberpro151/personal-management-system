@@ -11,6 +11,10 @@ class EnvReader extends AbstractController {
 
     const APP_DEFAULT_NPL_RECEIVER_EMAILS = "APP_DEFAULT_NPL_RECEIVER_EMAILS";
 
+    const PENDO_TRACK_EVENT_SECRET = "PENDO_TRACK_EVENT_SECRET";
+    const PENDO_DATA_HOST          = "PENDO_DATA_HOST";
+    const PENDO_DEFAULT_DATA_HOST  = "data.pendo.io";
+
     public static function getUploadDir() {
         return $_ENV['UPLOAD_DIR'];
     }
@@ -49,6 +53,30 @@ class EnvReader extends AbstractController {
     {
         $emailsString = Utils::getRealArrayForStringArray($_ENV[self::APP_DEFAULT_NPL_RECEIVER_EMAILS]);
         return $emailsString;
+    }
+
+    /**
+     * Returns the Pendo integration key used for sending server-side Track Events,
+     * it's a secret, so it must only be provided via environment (never committed),
+     * Track Events are not sent at all when it's not set
+     *
+     * @return string|null
+     */
+    public static function getPendoTrackEventSecret(): ?string
+    {
+        $secret = $_ENV[self::PENDO_TRACK_EVENT_SECRET] ?? $_SERVER[self::PENDO_TRACK_EVENT_SECRET] ?? null;
+        return empty($secret) ? null : $secret;
+    }
+
+    /**
+     * Returns the Pendo host (without protocol) that receives the server-side Track Events
+     *
+     * @return string
+     */
+    public static function getPendoDataHost(): string
+    {
+        $host = $_ENV[self::PENDO_DATA_HOST] ?? $_SERVER[self::PENDO_DATA_HOST] ?? null;
+        return empty($host) ? self::PENDO_DEFAULT_DATA_HOST : $host;
     }
 
     /**
