@@ -4,10 +4,12 @@ namespace App\Action\File;
 
 use App\DTO\Internal\Upload\UploadConfigurationDTO;
 use App\Enum\File\UploadStatusEnum;
+use App\Enum\PendoTrackEventEnum;
 use App\Exception\File\UploadValidationException;
 use App\Response\Base\BaseResponse;
 use App\Response\UploadedFile\UploadConfigurationResponse;
 use App\Response\UploadedFile\UploadResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Services\Files\Upload\FileUploadConfigurator;
 use App\Services\Files\Upload\FileUploadService;
@@ -18,6 +20,7 @@ use App\Services\TypeProcessor\ArrayHandler;
 use App\Traits\ExceptionLoggerAwareTrait;
 use Exception;
 use Psr\Log\LoggerInterface;
+use ReflectionClass;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -38,7 +41,8 @@ class UploadedFileAction extends AbstractController
         private readonly LoggerInterface             $logger,
         private readonly FileUploadConfigurator      $fileUploadConfigurator,
         private readonly TranslatorInterface         $translator,
-        private readonly TemporaryFileHandlerService $temporaryFileHandlerService
+        private readonly TemporaryFileHandlerService $temporaryFileHandlerService,
+        private readonly PendoTrackService           $pendoTrackService
     ) {
     }
 
@@ -70,6 +74,7 @@ class UploadedFileAction extends AbstractController
 
         $errorMessage = $this->translator->trans('file.upload.msg.uploadError');
         $isError      = false;
+        $errorType    = null;
         $status       = UploadStatusEnum::SUCCESS;
         $response     = UploadResponse::buildOkResponse();
 
@@ -92,13 +97,15 @@ class UploadedFileAction extends AbstractController
                 $response->setMessage("Demo: file has been uploaded but for security reasons it has been removed.");
                 unlink($filePath);
             }
-        } catch (UploadValidationException) {
-            $status  = UploadStatusEnum::ERROR;
-            $isError = true;
+        } catch (UploadValidationException $e) {
+            $status    = UploadStatusEnum::ERROR;
+            $isError   = true;
+            $errorType = (new ReflectionClass($e))->getShortName();
         } catch (Exception|TypeError $e) {
             $status = UploadStatusEnum::ERROR;
             $this->logException($e);
-            $isError = true;
+            $isError   = true;
+            $errorType = (new ReflectionClass($e))->getShortName();
         }
 
         if ($isError) {
@@ -108,6 +115,18 @@ class UploadedFileAction extends AbstractController
                 unlink($uploadedTmpFile->getRealPath());
             }
         }
+
+        // never sending the file name / path, only its extension
+        $this->pendoTrackService->track(PendoTrackEventEnum::FILE_UPLOAD_COMPLETED, [
+            'status'             => $status->value,
+            'uploadConfigId'     => is_string($uploadConfigId) ? $uploadConfigId : null,
+            'uploadTarget'       => is_string($uploadConfigId) ? $this->fileUploadConfigurator->getUploadTargetName($uploadConfigId) : null,
+            'fileExtension'      => is_string($fileName) ? substr(strtolower(pathinfo($fileName, PATHINFO_EXTENSION)), 0, 16) : null,
+            'fileSizeBytes'      => strlen($decodedFileContent),
+            'tagCount'           => is_array($tags) ? count($tags) : 0,
+            'hasUserDefinedName' => !empty($userDefinedName),
+            'errorType'          => $errorType,
+        ]);
 
         $response->setStatus($status->value);
 

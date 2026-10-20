@@ -6,11 +6,14 @@ namespace App\Action\System;
 
 use App\Attribute\JwtAuthenticationDisabledAttribute;
 use App\Entity\User;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\RequestService;
 use App\Services\Security\JwtAuthenticationService;
 use App\Services\Security\PasswordHashingService;
 use App\Services\Storage\RequestSessionStorage;
+use App\Services\System\EnvReader;
 use App\Services\System\SecurityService;
 use App\Services\TypeProcessor\ArrayHandler;
 use Doctrine\ORM\EntityManagerInterface;
@@ -30,6 +33,7 @@ class AppAction extends AbstractController
         private readonly EntityManagerInterface   $em,
         private readonly PasswordHashingService   $passwordHashingService,
         private readonly TranslatorInterface      $translator,
+        private readonly PendoTrackService        $pendoTrackService,
     ) {
     }
 
@@ -55,6 +59,11 @@ class AppAction extends AbstractController
         $user = $this->jwtAuthenticationService->getUserFromRequest();
         if (!$this->jwtAuthenticationService->isSystemLocked()) {
             RequestSessionStorage::$IS_SYSTEM_LOCKED = true;
+            $this->pendoTrackService->track(PendoTrackEventEnum::SYSTEM_LOCK_TOGGLED, [
+                'resultingLockState' => 'locked',
+                'success'            => true,
+            ], $user);
+
             $message = $this->translator->trans("security.lockResource.wholeSystemWasLocked");
             return BaseResponse::buildOkResponse($message)->toJsonResponse();
         }
@@ -62,11 +71,21 @@ class AppAction extends AbstractController
         $userPassword    = $user->getLockPassword();
         $isPasswordValid = $securityService->isPasswordValid($user, $userPassword, $password);
         if (!$isPasswordValid) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::SYSTEM_LOCK_TOGGLED, [
+                'resultingLockState' => 'locked',
+                'success'            => false,
+                'failureReason'      => 'invalid_lock_password',
+            ], $user);
+
             $message = $this->translator->trans('security.lockResource.invalidPassword');
             return BaseResponse::buildBadRequestErrorResponse($message)->toJsonResponse();
         }
 
         RequestSessionStorage::$IS_SYSTEM_LOCKED = false;
+        $this->pendoTrackService->track(PendoTrackEventEnum::SYSTEM_LOCK_TOGGLED, [
+            'resultingLockState' => 'unlocked',
+            'success'            => true,
+        ], $user);
 
         $message = $this->translator->trans("security.lockResource.wholeSystemHasBeenUnlocked");
         return BaseResponse::buildOkResponse($message)->toJsonResponse();
@@ -130,6 +149,11 @@ class AppAction extends AbstractController
 
         $this->em->persist($user);
         $this->em->flush();
+
+        // the new user is the visitor of the event, the email / username are not sent
+        $this->pendoTrackService->track(PendoTrackEventEnum::USER_REGISTERED, [
+            'isDemo' => EnvReader::isDemo(),
+        ], $user);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
     }

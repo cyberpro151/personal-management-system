@@ -6,8 +6,10 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\FilesTags;
 use App\Entity\Modules\Notes\MyNotes;
 use App\Entity\System\LockedResource;
+use App\Enum\PendoTrackEventEnum;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageService;
 use App\Services\System\LockedResourceService;
@@ -27,7 +29,8 @@ class SearchAction extends AbstractController {
     public function __construct(
         private readonly StorageService $storageService,
         private readonly EntityManagerInterface $entityManager,
-        private readonly LockedResourceService $lockedResourceService
+        private readonly LockedResourceService $lockedResourceService,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -49,6 +52,24 @@ class SearchAction extends AbstractController {
         $entriesData = [];
         $entriesData = $this->searchInStorage($query, $entriesData);
         $entriesData = $this->searchInNotes($query, $entriesData);
+
+        $notesResultsCount  = count($entriesData['notes'] ?? []);
+        $imagesResultsCount = count($entriesData[StorageModuleEnum::IMAGES->value] ?? []);
+        $videosResultsCount = count($entriesData[StorageModuleEnum::VIDEOS->value] ?? []);
+        $filesResultsCount  = count($entriesData[StorageModuleEnum::FILES->value] ?? []);
+        $totalResultsCount  = $notesResultsCount + $imagesResultsCount + $videosResultsCount + $filesResultsCount;
+
+        // the query itself is not sent as it can contain personal data
+        $this->pendoTrackService->track(PendoTrackEventEnum::GLOBAL_SEARCH_COMPLETED, [
+            'queryLength'        => mb_strlen($query),
+            'queryTermCount'     => count(preg_split("#\s+#", trim($query), -1, PREG_SPLIT_NO_EMPTY)),
+            'totalResultsCount'  => $totalResultsCount,
+            'notesResultsCount'  => $notesResultsCount,
+            'imagesResultsCount' => $imagesResultsCount,
+            'videosResultsCount' => $videosResultsCount,
+            'filesResultsCount'  => $filesResultsCount,
+            'isZeroResult'       => (0 === $totalResultsCount),
+        ]);
 
         $response = BaseResponse::buildOkResponse();
         $response->setAllRecordsData($entriesData);

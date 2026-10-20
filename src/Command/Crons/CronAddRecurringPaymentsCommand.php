@@ -4,8 +4,10 @@ namespace App\Command\Crons;
 
 use App\Entity\Modules\Payments\MyPaymentsMonthly;
 use App\Entity\Modules\Payments\MyRecurringPaymentMonthly;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Payments\MyPaymentsMonthlyRepository;
 use App\Repository\Modules\Payments\MyRecurringPaymentMonthlyRepository;
+use App\Services\External\PendoTrackService;
 use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
@@ -49,6 +51,7 @@ class CronAddRecurringPaymentsCommand extends Command
         private readonly EntityManagerInterface $em,
         private readonly MyPaymentsMonthlyRepository $paymentsMonthlyRepository,
         private readonly MyRecurringPaymentMonthlyRepository $recurringPaymentMonthlyRepository,
+        private readonly PendoTrackService $pendoTrackService,
         string $name = null
     ) {
         parent::__construct($name);
@@ -84,9 +87,14 @@ class CronAddRecurringPaymentsCommand extends Command
                 $this->addRecurringPaymentsToDatabase($recurringPaymentsToSet);
                 $this->report($io);
 
+                if ($this->countOfAddedPayments > 0) {
+                    $this->trackRecurringPaymentsApplied(true);
+                }
+
             }catch(Exception $e){
                 $this->logger->critical("There was an error while trying to add recurring payments.");
                 $this->logger->critical($e->getMessage());
+                $this->trackRecurringPaymentsApplied(false);
                 return Command::FAILURE;
             }
 
@@ -156,6 +164,23 @@ class CronAddRecurringPaymentsCommand extends Command
         $io->note("Number of already existing recurring payments: "     . $this->countOfAlreadyExistingPayments);
         $io->note("Number of recurring payments that will be added: "   . $this->countOfFilteredPayments);
         $io->note("Number of added recurring payments: "                . $this->countOfAddedPayments);
+    }
+
+    /**
+     * Sends the run outcome to Pendo, attributed to the instance's single active user (resolved by {@see PendoTrackService})
+     *
+     * @param bool $isSuccess
+     */
+    private function trackRecurringPaymentsApplied(bool $isSuccess): void
+    {
+        $this->pendoTrackService->track(PendoTrackEventEnum::RECURRING_PAYMENTS_APPLIED, [
+            'yearMonth'                      => $this->currYearMonth,
+            'countOfPaymentsToAdd'           => $this->countOfPaymentsToAdd,
+            'countOfAlreadyExistingPayments' => $this->countOfAlreadyExistingPayments,
+            'countOfFilteredPayments'        => $this->countOfFilteredPayments,
+            'countOfAddedPayments'           => $this->countOfAddedPayments,
+            'success'                        => $isSuccess,
+        ]);
     }
 
     /**

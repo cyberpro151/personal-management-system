@@ -6,7 +6,9 @@ use App\Attribute\ModuleAttribute;
 use App\DTO\Settings\Notifications\ConfigDto;
 use App\DTO\Settings\SettingNotificationDto;
 use App\Entity\Setting;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\Settings\SettingsLoader;
@@ -23,12 +25,14 @@ use Symfony\Component\Routing\Annotation\Route;
 class ConfigAction extends AbstractController {
 
     /**
-     * @param SettingsSaver  $settingsSaverService
-     * @param SettingsLoader $settingsLoaderService
+     * @param SettingsSaver     $settingsSaverService
+     * @param SettingsLoader    $settingsLoaderService
+     * @param PendoTrackService $pendoTrackService
      */
     public function __construct(
         private readonly SettingsSaver  $settingsSaverService,
         private readonly SettingsLoader $settingsLoaderService,
+        private readonly PendoTrackService $pendoTrackService,
     ) {
     }
 
@@ -83,6 +87,27 @@ class ConfigAction extends AbstractController {
         }
 
         $this->settingsSaverService->saveNotificationsConfigSettings($dtos);
+
+        // the config values (webhook urls) are credentials, so only their presence is sent
+        $configNames         = [];
+        $isActiveForReminder = false;
+        $hasValue            = false;
+        $activeChannelCount  = 0;
+        foreach ($dtos as $dto) {
+            $configNames[]       = $dto->getName();
+            $isActiveForReminder = $isActiveForReminder || $dto->isActiveForReminder();
+            $hasValue            = $hasValue || !empty($dto->getValue());
+            if ($dto->isActiveForReminder() && !empty($dto->getValue())) {
+                $activeChannelCount++;
+            }
+        }
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::REMINDER_NOTIFICATIONS_CONFIGURED, [
+            'configName'         => implode(",", $configNames),
+            'activeForReminder'  => $isActiveForReminder,
+            'hasValue'           => $hasValue,
+            'activeChannelCount' => $activeChannelCount,
+        ]);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
     }

@@ -6,14 +6,17 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Schedules\MySchedule;
 use App\Entity\Modules\Schedules\MyScheduleCalendar;
 use App\Entity\Modules\Schedules\MyScheduleReminder;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Schedules\MyScheduleReminderRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
 use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
+use ReflectionClass;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -29,6 +32,7 @@ class SchedulesAction extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly TranslatorInterface $translator,
         private readonly MyScheduleReminderRepository $scheduleReminderRepository,
+        private readonly PendoTrackService $pendoTrackService,
     ) {
     }
 
@@ -99,6 +103,13 @@ class SchedulesAction extends AbstractController
 
         $calendar = $this->em->find(MyScheduleCalendar::class, $calendarId);
         if (is_null($calendar)) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::SCHEDULE_SAVED, [
+                'success'       => false,
+                'failureReason' => 'calendar_not_found',
+                'isNew'         => $isNew,
+                'calendarId'    => (int) $calendarId,
+            ]);
+
             return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.calendar.schedules.save.noMatchingCalendarFound'));
         }
 
@@ -116,14 +127,37 @@ class SchedulesAction extends AbstractController
             $this->em->persist($schedule);
             $this->em->flush();
 
-            $this->handleReminders($reminders, $schedule);
+            $remindersChanges = $this->handleReminders($reminders, $schedule);
             $this->em->persist($schedule);
             $this->em->flush();
         } catch (Exception $e) {
             $this->em->rollback();
+            $this->pendoTrackService->track(PendoTrackEventEnum::SCHEDULE_SAVED, [
+                'success'       => false,
+                'failureReason' => 'rolled_back',
+                'errorType'     => (new ReflectionClass($e))->getShortName(),
+                'isNew'         => $isNew,
+                'calendarId'    => (int) $calendarId,
+            ]);
+
             throw $e;
         }
         $this->em->commit();
+
+        // title, body and location are not sent as these can contain personal data
+        $startDay = new DateTime($schedule->getStart()->format('Y-m-d'));
+        $this->pendoTrackService->track(PendoTrackEventEnum::SCHEDULE_SAVED, [
+            'success'          => true,
+            'isNew'            => $isNew,
+            'calendarId'       => (int) $calendarId,
+            'isAllDay'         => (bool) $isAllDay,
+            'reminderCount'    => $remindersChanges['total'],
+            'remindersAdded'   => $remindersChanges['added'],
+            'remindersRemoved' => $remindersChanges['removed'],
+            'hasLocation'      => !empty($location),
+            'durationMinutes'  => intdiv($schedule->getEnd()->getTimestamp() - $schedule->getStart()->getTimestamp(), 60),
+            'daysUntilStart'   => (int) (new DateTime('today'))->diff($startDay)->format('%r%a'),
+        ]);
 
         return BaseResponse::buildOkResponse();
     }
@@ -134,20 +168,27 @@ class SchedulesAction extends AbstractController
      * @param string     $remindersData
      * @param MySchedule $schedule
      *
+     * @return array{added: int, removed: int, total: int} - counts of the schedule reminders after handling them
+     *
      * @throws Exception
      */
-    private function handleReminders(string $remindersData, MySchedule $schedule): void {
+    private function handleReminders(string $remindersData, MySchedule $schedule): array
+    {
         if (empty($remindersData)) {
+            $removedCount = 0;
             foreach ($schedule->getMyScheduleReminders() as $reminder) {
                 $this->em->remove($reminder);
+                $removedCount++;
             }
-            return;
+
+            return ['added' => 0, 'removed' => $removedCount, 'total' => 0];
         }
 
         $reminderEntities = [];
         $remindersDatesArray = explode(",", $remindersData);
         $remindersDatesArray = array_unique($remindersDatesArray);
 
+        $removedCount = 0;
         foreach ($schedule->getMyScheduleReminders() as $existingScheduleReminder) {
             $reminderDateTimeString = $existingScheduleReminder->getDate()->format("Y-m-d H:i"); // seconds are not delivered from front
 
@@ -161,6 +202,7 @@ class SchedulesAction extends AbstractController
             }
 
             $this->scheduleReminderRepository->removeReminder($existingScheduleReminder);
+            $removedCount++;
         }
 
         foreach ($remindersDatesArray as $reminderDate) {
@@ -175,6 +217,12 @@ class SchedulesAction extends AbstractController
         }
 
         $schedule->setMyScheduleReminders($reminderEntities);
+
+        return [
+            'added'   => count($remindersDatesArray),
+            'removed' => $removedCount,
+            'total'   => count($reminderEntities),
+        ];
     }
 
 }

@@ -4,6 +4,7 @@ namespace App\Services\Files\Upload;
 
 use App\DTO\Internal\Upload\UploadConfigurationDTO;
 use App\Enum\File\UploadedFileSourceEnum;
+use App\Enum\StorageModuleEnum;
 use App\Services\Files\PathService;
 use Exception;
 
@@ -73,6 +74,26 @@ class FileUploadConfigurator
         };
 
         return $configuration;
+    }
+
+    /**
+     * Returns human-readable name of the upload target for given configuration identifier.
+     * Not relying on {@see UploadConfigurationDTO::getSource()} as some configurations share the same source.
+     *
+     * @param string $configurationId
+     *
+     * @return string
+     */
+    public function getUploadTargetName(string $configurationId): string
+    {
+        return match ($configurationId) {
+            self::PROFILE_PICTURE_UPLOAD     => "profile_image",
+            self::IMAGE_STORAGE__ID          => StorageModuleEnum::IMAGES->value,
+            self::VIDEOS_STORAGE_ID          => StorageModuleEnum::VIDEOS->value,
+            self::FILES_STORAGE_ID           => StorageModuleEnum::FILES->value,
+            self::MONTHLY_PAYMENTS_IMPORT_ID => "monthly_payments_import",
+            default                          => "unknown",
+        };
     }
 
     /**

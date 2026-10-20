@@ -7,7 +7,9 @@ namespace App\Action\Modules\Payments;
 use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Payments\MyPaymentsMonthly;
 use App\Entity\Modules\Payments\MyPaymentsSettings;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -16,6 +18,7 @@ use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
 use Psr\Log\LoggerInterface;
+use ReflectionClass;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -31,7 +34,8 @@ class MyPaymentsMonthlyAction extends AbstractController {
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface        $logger,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -114,24 +118,50 @@ class MyPaymentsMonthlyAction extends AbstractController {
         $dataArray = $contentArray['data'] ?? [];
 
         if (empty($dataArray)) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::MONTHLY_PAYMENTS_IMPORT_COMPLETED, [
+                'rowCount'      => 0,
+                'success'       => false,
+                'failureReason' => 'no_import_data',
+            ]);
+
             $msg = $this->translator->trans('module.monthly_payments.import.message.noImportData');
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
         }
 
+        $paymentDates   = [];
+        $paymentTypeIds = [];
         try {
             $this->em->beginTransaction();
             foreach ($dataArray as $row) {
                 $payment = new MyPaymentsMonthly();
                 $this->createOrUpdateFromDataArray($row, $payment);
+
+                $paymentDates[]   = $payment->getDate()->format('Y-m-d');
+                $paymentTypeIds[] = $payment->getType()->getId();
             }
             $this->em->commit();
         } catch (Exception $e) {
             $this->em->rollback();
             $this->logException($e);
 
+            $this->pendoTrackService->track(PendoTrackEventEnum::MONTHLY_PAYMENTS_IMPORT_COMPLETED, [
+                'rowCount'      => is_array($dataArray) ? count($dataArray) : 0,
+                'success'       => false,
+                'failureReason' => 'rolled_back',
+                'errorType'     => (new ReflectionClass($e))->getShortName(),
+            ]);
+
             $msg = $this->translator->trans('module.monthly_payments.import.message.fail');
             return BaseResponse::buildInternalServerErrorResponse($msg)->toJsonResponse();
         }
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::MONTHLY_PAYMENTS_IMPORT_COMPLETED, [
+            'rowCount'                 => count($paymentDates),
+            'success'                  => true,
+            'distinctPaymentTypeCount' => count(array_unique($paymentTypeIds)),
+            'earliestPaymentDate'      => empty($paymentDates) ? null : min($paymentDates),
+            'latestPaymentDate'        => empty($paymentDates) ? null : max($paymentDates),
+        ]);
 
         $msg = $this->translator->trans('module.monthly_payments.import.message.success');
         return BaseResponse::buildOkResponse($msg)->toJsonResponse();

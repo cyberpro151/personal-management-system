@@ -11,6 +11,10 @@ class EnvReader extends AbstractController {
 
     const APP_DEFAULT_NPL_RECEIVER_EMAILS = "APP_DEFAULT_NPL_RECEIVER_EMAILS";
 
+    const PENDO_TRACK_EVENT_SECRET = "PENDO_TRACK_EVENT_SECRET";
+    const PENDO_DATA_HOST          = "PENDO_DATA_HOST";
+    const PENDO_DEFAULT_DATA_HOST  = "data.pendo.io";
+
     public static function getUploadDir() {
         return $_ENV['UPLOAD_DIR'];
     }
@@ -113,6 +117,29 @@ class EnvReader extends AbstractController {
     public static function getEnvironment(): string
     {
         return $_ENV['APP_ENV'];
+    }
+
+    /**
+     * Returns the Pendo integration key used for sending server-side Track Events,
+     * empty string means that the tracking is disabled.
+     *
+     * @return string
+     */
+    public static function getPendoTrackEventSecret(): string
+    {
+        return $_ENV[self::PENDO_TRACK_EVENT_SECRET] ?? "";
+    }
+
+    /**
+     * Returns the Pendo data host to which the server-side Track Events are sent
+     *
+     * @return string
+     */
+    public static function getPendoDataHost(): string
+    {
+        $dataHost = $_ENV[self::PENDO_DATA_HOST] ?? "";
+
+        return empty($dataHost) ? self::PENDO_DEFAULT_DATA_HOST : $dataHost;
     }
 
 }
