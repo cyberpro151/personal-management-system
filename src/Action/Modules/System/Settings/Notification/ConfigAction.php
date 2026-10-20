@@ -6,7 +6,9 @@ use App\Attribute\ModuleAttribute;
 use App\DTO\Settings\Notifications\ConfigDto;
 use App\DTO\Settings\SettingNotificationDto;
 use App\Entity\Setting;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\Settings\SettingsLoader;
@@ -23,12 +25,14 @@ use Symfony\Component\Routing\Annotation\Route;
 class ConfigAction extends AbstractController {
 
     /**
-     * @param SettingsSaver  $settingsSaverService
-     * @param SettingsLoader $settingsLoaderService
+     * @param SettingsSaver     $settingsSaverService
+     * @param SettingsLoader    $settingsLoaderService
+     * @param PendoTrackService $pendoTrackService
      */
     public function __construct(
-        private readonly SettingsSaver  $settingsSaverService,
-        private readonly SettingsLoader $settingsLoaderService,
+        private readonly SettingsSaver     $settingsSaverService,
+        private readonly SettingsLoader    $settingsLoaderService,
+        private readonly PendoTrackService $pendoTrackService,
     ) {
     }
 
@@ -83,8 +87,32 @@ class ConfigAction extends AbstractController {
         }
 
         $this->settingsSaverService->saveNotificationsConfigSettings($dtos);
+        $this->trackChannelsConfigured($dtos);
 
         return BaseResponse::buildOkResponse()->toJsonResponse();
+    }
+
+    /**
+     * Tracked once per saved config. The config value itself is never sent,
+     * since for the webhook it's the url which works as a credential.
+     *
+     * @param ConfigDto[] $configDtos
+     */
+    private function trackChannelsConfigured(array $configDtos): void
+    {
+        $activeChannelsCount = count(array_filter(
+            $configDtos,
+            fn(ConfigDto $configDto) => $configDto->isActiveForReminder() && !empty($configDto->getValue())
+        ));
+
+        foreach ($configDtos as $configDto) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::NOTIFICATION_CHANNEL_CONFIGURED, [
+                'channel_name'           => $configDto->getName(),
+                'is_active_for_reminder' => $configDto->isActiveForReminder(),
+                'has_value'              => !empty($configDto->getValue()),
+                'active_channels_count'  => $activeChannelsCount,
+            ]);
+        }
     }
 
     /**

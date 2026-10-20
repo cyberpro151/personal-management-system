@@ -76,6 +76,25 @@ class FileUploadConfigurator
     }
 
     /**
+     * Returns human-readable name of the upload target for given identifier (used for analytics),
+     * so that the identifiers themselves don't need to be exposed anywhere.
+     *
+     * @param string $configurationId
+     *
+     * @return string
+     */
+    public function getUploadTarget(string $configurationId): string
+    {
+        return match ($configurationId) {
+            self::PROFILE_PICTURE_UPLOAD => "profile_image",
+            self::IMAGE_STORAGE__ID      => "images",
+            self::VIDEOS_STORAGE_ID      => "videos",
+            self::FILES_STORAGE_ID       => "files",
+            default                      => "unknown",
+        };
+    }
+
+    /**
      * @return UploadConfigurationDTO
      */
     private function buildProfilePictureUploadConfig(): UploadConfigurationDTO

@@ -6,8 +6,10 @@ namespace App\Action\Modules\Goals;
 
 use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Goals\MyGoalsPayments;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Goals\MyGoalsPaymentsRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -25,7 +27,8 @@ class GoalsPaymentsAction extends AbstractController {
 
     public function __construct(
         private readonly MyGoalsPaymentsRepository $goalsPaymentsRepository,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -97,9 +100,13 @@ class GoalsPaymentsAction extends AbstractController {
      */
     private function createOrUpdate(Request $request, ?MyGoalsPayments $payment = null): void
     {
+        $isNewGoal = is_null($payment);
         if (!$payment) {
             $payment = new MyGoalsPayments();
         }
+
+        // must be read before the setters below change the state
+        $wasGoalReached = !$isNewGoal && $this->isGoalReached($payment);
 
         $dataArray       = RequestService::tryFromJsonBody($request);
         $name            = ArrayHandler::get($dataArray, 'name', allowEmpty: false);
@@ -121,5 +128,44 @@ class GoalsPaymentsAction extends AbstractController {
 
         $this->em->persist($payment);
         $this->em->flush();
+
+        // only crossing the goal (below -> at / above) counts, re-saving already reached goal is not tracked
+        if (!$wasGoalReached && $this->isGoalReached($payment)) {
+            $this->trackGoalReached($payment, $isNewGoal);
+        }
+    }
+
+    /**
+     * Goal without positive amount to collect is never considered as reached
+     *
+     * @param MyGoalsPayments $payment
+     *
+     * @return bool
+     */
+    private function isGoalReached(MyGoalsPayments $payment): bool
+    {
+        return $payment->getMoneyGoal() > 0 && $payment->getMoneyCollected() >= $payment->getMoneyGoal();
+    }
+
+    /**
+     * Only the timing properties are sent, never the money amounts
+     *
+     * @param MyGoalsPayments $payment
+     * @param bool            $isNewGoal
+     */
+    private function trackGoalReached(MyGoalsPayments $payment, bool $isNewGoal): void
+    {
+        $today     = new DateTime("today");
+        $deadline  = (clone $payment->getDeadline())->setTime(0, 0);
+        $startDate = (clone $payment->getCollectionStartDate())->setTime(0, 0);
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::SAVINGS_GOAL_REACHED, [
+            'goal_payment_id'          => $payment->getId(),
+            'is_new_goal'              => $isNewGoal,
+            'days_to_deadline'         => (int) $today->diff($deadline)->format("%r%a"),
+            'reached_before_deadline'  => $today <= $deadline,
+            'collection_duration_days' => (int) $startDate->diff($today)->format("%r%a"),
+            'is_shown_on_dashboard'    => (bool) $payment->getDisplayOnDashboard(),
+        ]);
     }
 }

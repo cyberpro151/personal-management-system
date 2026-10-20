@@ -5,8 +5,11 @@ namespace App\Services\Module\Storage;
 use App\Entity\FilesTags;
 use App\Entity\Modules\ModuleData;
 use App\Entity\System\LockedResource;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
+use App\Services\Module\ModulesService;
 use App\Traits\ExceptionLoggerAwareTrait;
 use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
@@ -22,7 +25,8 @@ class StorageFolderService
     public function __construct(
         private readonly TranslatorInterface    $translator,
         private readonly LoggerInterface        $logger,
-        private readonly EntityManagerInterface $entityManager
+        private readonly EntityManagerInterface $entityManager,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -115,6 +119,7 @@ class StorageFolderService
                 'possibleError' => error_get_last(),
             ]);
 
+            $this->trackTransferCompleted("move", $oldDirPath, $newDirPath, "failed");
             return BaseResponse::buildInternalServerErrorResponse($msg);
         }
 
@@ -152,13 +157,16 @@ class StorageFolderService
                 ]);
 
                 $msg = $this->translator->trans('module.storage.moveFileOrDir.folderMovedDatabaseChangesFailed');
+                $this->trackTransferCompleted("move", $oldDirPath, $newDirPath, "failed_not_reverted");
                 return BaseResponse::buildInternalServerErrorResponse($msg);
             }
 
             $msg = $this->translator->trans('module.storage.moveFileOrDir.folderCouldNotBeMovedReverted');
+            $this->trackTransferCompleted("move", $oldDirPath, $newDirPath, "reverted");
             return BaseResponse::buildInternalServerErrorResponse($msg);
         }
 
+        $this->trackTransferCompleted("move", $oldDirPath, $newDirPath, "success");
         return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.folderHaveBeenMoved'));
     }
 
@@ -206,6 +214,8 @@ class StorageFolderService
                 }
             }
 
+            // front can't tell this case apart from success, as it's still a http 200 response
+            $this->trackTransferCompleted("copy", $oldDirPath, $newDirPath, "reverted", 0, $someFilesExisted);
             return BaseResponse::buildOkResponse($this->translator->trans('module.storage.common.errorReverted'));
         }
 
@@ -221,10 +231,45 @@ class StorageFolderService
 
         $this->entityManager->flush();
 
+        $this->trackTransferCompleted("copy", $oldDirPath, $newDirPath, "success", count($copiedFilePaths), $someFilesExisted);
         if ($someFilesExisted) {
             return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.filesHaveBeenCopiedButExisted'));
         }
 
         return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.filesHaveBeenCopied'));
+    }
+
+    /**
+     * Only the module names and counts are sent, never the folder / file names or paths.
+     *
+     * Transfer statuses:
+     * - success,
+     * - failed (nothing has been changed),
+     * - reverted (failed, and changes made so far were reverted),
+     * - failed_not_reverted (folder got moved, but saving its data failed and moving it back failed too),
+     *
+     * @param string    $operation        - move / copy
+     * @param string    $sourceDirPath
+     * @param string    $targetDirPath
+     * @param string    $transferStatus
+     * @param int|null  $copiedFileCount  - copy only
+     * @param bool|null $hadNameConflicts - copy only
+     */
+    private function trackTransferCompleted(
+        string $operation,
+        string $sourceDirPath,
+        string $targetDirPath,
+        string $transferStatus,
+        ?int   $copiedFileCount = null,
+        ?bool  $hadNameConflicts = null
+    ): void {
+        $this->pendoTrackService->track(PendoTrackEventEnum::STORAGE_FOLDER_TRANSFER_COMPLETED, [
+            'operation'          => $operation,
+            'source_module'      => ModulesService::getUploadModuleNameByFilePath($sourceDirPath),
+            'target_module'      => ModulesService::getUploadModuleNameByFilePath($targetDirPath),
+            'transfer_status'    => $transferStatus,
+            'copied_file_count'  => $copiedFileCount,
+            'had_name_conflicts' => $hadNameConflicts,
+        ]);
     }
 }

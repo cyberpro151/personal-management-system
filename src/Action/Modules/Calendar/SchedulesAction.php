@@ -6,8 +6,10 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Schedules\MySchedule;
 use App\Entity\Modules\Schedules\MyScheduleCalendar;
 use App\Entity\Modules\Schedules\MyScheduleReminder;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Schedules\MyScheduleReminderRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -29,6 +31,7 @@ class SchedulesAction extends AbstractController
         private readonly EntityManagerInterface $em,
         private readonly TranslatorInterface $translator,
         private readonly MyScheduleReminderRepository $scheduleReminderRepository,
+        private readonly PendoTrackService $pendoTrackService,
     ) {
     }
 
@@ -116,7 +119,7 @@ class SchedulesAction extends AbstractController
             $this->em->persist($schedule);
             $this->em->flush();
 
-            $this->handleReminders($reminders, $schedule);
+            $remindersChanges = $this->handleReminders($reminders, $schedule);
             $this->em->persist($schedule);
             $this->em->flush();
         } catch (Exception $e) {
@@ -124,6 +127,19 @@ class SchedulesAction extends AbstractController
             throw $e;
         }
         $this->em->commit();
+
+        // saving the schedule without changing its reminders is not tracked
+        if ($remindersChanges['added'] > 0 || $remindersChanges['removed'] > 0) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::SCHEDULE_REMINDERS_SET, [
+                'schedule_id'             => $schedule->getId(),
+                'is_new_schedule'         => $isNew,
+                'reminder_count'          => $remindersChanges['total'],
+                'reminders_added_count'   => $remindersChanges['added'],
+                'reminders_removed_count' => $remindersChanges['removed'],
+                'is_all_day'              => (bool) $schedule->getAllDay(),
+                'calendar_id'             => $calendar->getId(),
+            ]);
+        }
 
         return BaseResponse::buildOkResponse();
     }
@@ -134,17 +150,23 @@ class SchedulesAction extends AbstractController
      * @param string     $remindersData
      * @param MySchedule $schedule
      *
+     * @return array - counts of the reminders: `added`, `removed` and `total` (after the change)
      * @throws Exception
      */
-    private function handleReminders(string $remindersData, MySchedule $schedule): void {
+    private function handleReminders(string $remindersData, MySchedule $schedule): array
+    {
         if (empty($remindersData)) {
+            $removedCount = 0;
             foreach ($schedule->getMyScheduleReminders() as $reminder) {
                 $this->em->remove($reminder);
+                $removedCount++;
             }
-            return;
+
+            return ['added' => 0, 'removed' => $removedCount, 'total' => 0];
         }
 
         $reminderEntities = [];
+        $removedCount     = 0;
         $remindersDatesArray = explode(",", $remindersData);
         $remindersDatesArray = array_unique($remindersDatesArray);
 
@@ -161,6 +183,7 @@ class SchedulesAction extends AbstractController
             }
 
             $this->scheduleReminderRepository->removeReminder($existingScheduleReminder);
+            $removedCount++;
         }
 
         foreach ($remindersDatesArray as $reminderDate) {
@@ -175,6 +198,12 @@ class SchedulesAction extends AbstractController
         }
 
         $schedule->setMyScheduleReminders($reminderEntities);
+
+        return [
+            'added'   => count($remindersDatesArray),
+            'removed' => $removedCount,
+            'total'   => count($reminderEntities),
+        ];
     }
 
 }

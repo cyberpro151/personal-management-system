@@ -3,10 +3,12 @@
 namespace App\Command\Crons;
 
 use App\DTO\Modules\Schedules\IncomingScheduleDTO;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Schedules\MyScheduleReminderRepository;
 use App\Repository\Modules\Schedules\MyScheduleRepository;
 use App\Response\BaseResponse;
 use App\Services\External\NotifierProxyLoggerService;
+use App\Services\External\PendoTrackService;
 use App\Traits\ExceptionLoggerAwareTrait;
 use Exception;
 use GuzzleHttp\Exception\GuzzleException;
@@ -42,6 +44,7 @@ class CronTransferSchedulesToNotifierProxyLoggerCommand extends Command
         private readonly MyScheduleReminderRepository $scheduleReminderRepository,
         private readonly MyScheduleRepository $myScheduleRepository,
         private readonly LoggerInterface $logger,
+        private readonly PendoTrackService $pendoTrackService,
     )
     {
         parent::__construct(self::$defaultName);
@@ -82,6 +85,9 @@ class CronTransferSchedulesToNotifierProxyLoggerCommand extends Command
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
+        $remindersProcessedCount = 0;
+        $notificationsSentCount  = 0;
+
         try{
             $this->logger->info("Started transferring the schedules to npl");
             {
@@ -97,9 +103,12 @@ class CronTransferSchedulesToNotifierProxyLoggerCommand extends Command
                     $response = $this->handleTransferForChannel($incomingScheduleDTO);
 
                     if($response->isSuccess()){
+                        $notificationsSentCount++;
+
                         $reminder = $this->scheduleReminderRepository->findOneById($incomingScheduleDTO->getReminderId());
                         $reminder->setProcessed(true);
                         $this->scheduleReminderRepository->saveReminder($reminder);
+                        $remindersProcessedCount++;
                     }
                 }
             }
@@ -107,10 +116,34 @@ class CronTransferSchedulesToNotifierProxyLoggerCommand extends Command
 
         }catch(Exception $e){
             $this->logException($e);
+            $this->trackRemindersSent("failure", $remindersProcessedCount, $notificationsSentCount);
             return Command::FAILURE;
         }
 
+        // runs without any processed reminder are not tracked
+        if ($remindersProcessedCount > 0) {
+            $this->trackRemindersSent("success", $remindersProcessedCount, $notificationsSentCount);
+        }
+
         return Command::SUCCESS;
+    }
+
+    /**
+     * This is the second delivery path of the schedule reminders, so it's tracked the same way as in
+     * {@see \App\Command\Module\Schedules\SendRemindersCommand}, with the channel used for transfer
+     *
+     * @param string $runStatus
+     * @param int    $remindersProcessedCount
+     * @param int    $notificationsSentCount
+     */
+    private function trackRemindersSent(string $runStatus, int $remindersProcessedCount, int $notificationsSentCount): void
+    {
+        $this->pendoTrackService->track(PendoTrackEventEnum::SCHEDULE_REMINDERS_SENT, [
+            'reminders_processed_count' => $remindersProcessedCount,
+            'notifications_sent_count'  => $notificationsSentCount,
+            'active_channels'           => $this->channel,
+            'run_status'                => $runStatus,
+        ]);
     }
 
     /**

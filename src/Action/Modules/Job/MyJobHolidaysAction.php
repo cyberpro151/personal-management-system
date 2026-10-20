@@ -6,7 +6,10 @@ namespace App\Action\Modules\Job;
 
 use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Job\MyJobHolidays;
+use App\Entity\Modules\Job\MyJobHolidaysPool;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -24,7 +27,8 @@ class MyJobHolidaysAction extends AbstractController {
 
     public function __construct(
         private readonly EntityValidatorService $entityValidator,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -118,13 +122,38 @@ class MyJobHolidaysAction extends AbstractController {
         $validationResult = $this->entityValidator->handleValidation($holidayEntry, $action);
 
         if (!$validationResult->isValid()) {
+            $this->trackHolidayDaysRecorded($holidayEntry, $isNew, "rejected");
             return BaseResponse::buildBadRequestErrorResponse($validationResult->concatFailedValidations());
         }
 
         $this->em->persist($holidayEntry);
         $this->em->flush();
+        $this->trackHolidayDaysRecorded($holidayEntry, $isNew, "accepted");
 
         return BaseResponse::buildOkResponse();
+    }
+
+    /**
+     * Days left in pool are calculated from the saved state, so for rejected entry it's the state without the change.
+     * The free text `information` is never sent.
+     *
+     * @param MyJobHolidays $holidayEntry
+     * @param bool          $isNew
+     * @param string        $validationStatus
+     *
+     * @throws Exception
+     */
+    private function trackHolidayDaysRecorded(MyJobHolidays $holidayEntry, bool $isNew, string $validationStatus): void
+    {
+        $daysLeftInPool = $this->em->getRepository(MyJobHolidaysPool::class)->getDaysInPoolLeftForYear((string) $holidayEntry->getYear());
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::HOLIDAY_DAYS_RECORDED, [
+            'year'              => $holidayEntry->getYear(),
+            'days_spent'        => $holidayEntry->getDaysSpent(),
+            'days_left_in_pool' => $daysLeftInPool,
+            'is_new_entry'      => $isNew,
+            'validation_status' => $validationStatus,
+        ]);
     }
 
 }

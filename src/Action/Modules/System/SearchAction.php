@@ -6,8 +6,10 @@ use App\Attribute\ModuleAttribute;
 use App\Entity\FilesTags;
 use App\Entity\Modules\Notes\MyNotes;
 use App\Entity\System\LockedResource;
+use App\Enum\PendoTrackEventEnum;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageService;
 use App\Services\System\LockedResourceService;
@@ -27,7 +29,8 @@ class SearchAction extends AbstractController {
     public function __construct(
         private readonly StorageService $storageService,
         private readonly EntityManagerInterface $entityManager,
-        private readonly LockedResourceService $lockedResourceService
+        private readonly LockedResourceService $lockedResourceService,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -49,6 +52,8 @@ class SearchAction extends AbstractController {
         $entriesData = [];
         $entriesData = $this->searchInStorage($query, $entriesData);
         $entriesData = $this->searchInNotes($query, $entriesData);
+
+        $this->trackSearchCompleted($query, $entriesData);
 
         $response = BaseResponse::buildOkResponse();
         $response->setAllRecordsData($entriesData);
@@ -141,6 +146,35 @@ class SearchAction extends AbstractController {
         $entriesData['notes'] = $notesData;
 
         return $entriesData;
+    }
+
+    /**
+     * Tracks the search outcome, the query itself is never sent as it can contain personal data
+     *
+     * @param string $query
+     * @param array  $entriesData
+     *
+     * @throws \Lexik\Bundle\JWTAuthenticationBundle\Exception\JWTDecodeFailureException
+     */
+    private function trackSearchCompleted(string $query, array $entriesData): void
+    {
+        $imagesCount = count($entriesData[StorageModuleEnum::IMAGES->value] ?? []);
+        $videosCount = count($entriesData[StorageModuleEnum::VIDEOS->value] ?? []);
+        $filesCount  = count($entriesData[StorageModuleEnum::FILES->value] ?? []);
+        $notesCount  = count($entriesData['notes'] ?? []);
+        $totalCount  = $imagesCount + $videosCount + $filesCount + $notesCount;
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::GLOBAL_SEARCH_COMPLETED, [
+            'query_length'         => mb_strlen($query),
+            'query_term_count'     => count(preg_split("#\s+#", trim($query), -1, PREG_SPLIT_NO_EMPTY)),
+            'total_results_count'  => $totalCount,
+            'notes_results_count'  => $notesCount,
+            'images_results_count' => $imagesCount,
+            'videos_results_count' => $videosCount,
+            'files_results_count'  => $filesCount,
+            'has_results'          => $totalCount > 0,
+            'is_system_locked'     => $this->lockedResourceService->isSystemLocked(),
+        ]);
     }
 
 }

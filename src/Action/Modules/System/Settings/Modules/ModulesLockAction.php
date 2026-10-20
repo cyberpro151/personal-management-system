@@ -4,7 +4,9 @@ namespace App\Action\Modules\System\Settings\Modules;
 
 use App\Attribute\ModuleAttribute;
 use App\DTO\Settings\Lock\Subsettings\SettingsModuleLockDTO;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\Settings\SettingsLockModuleService;
@@ -26,11 +28,13 @@ class ModulesLockAction extends AbstractController {
      * @param SettingsSaver             $settingsSaverService
      * @param SettingsLockModuleService $settingsLockModuleService
      * @param LockedResourceService     $lockedResourceService
+     * @param PendoTrackService         $pendoTrackService
      */
     public function __construct(
         private readonly SettingsSaver  $settingsSaverService,
         private readonly SettingsLockModuleService $settingsLockModuleService,
-        private readonly LockedResourceService $lockedResourceService
+        private readonly LockedResourceService $lockedResourceService,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -67,10 +71,12 @@ class ModulesLockAction extends AbstractController {
     public function update(Request $request): JsonResponse
     {
         if (EnvReader::isDemo()) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::MODULE_LOCK_SETTINGS_UPDATED, ['update_status' => "demo_blocked"]);
             return BaseResponse::buildDemoDisabledLogicResponse()->toJsonResponse();
         }
 
         if ($this->lockedResourceService->isSystemLocked()) {
+            $this->pendoTrackService->track(PendoTrackEventEnum::MODULE_LOCK_SETTINGS_UPDATED, ['update_status' => "denied_system_locked"]);
             return BaseResponse::buildAccessDeniedResponse()->toJsonResponse();
         }
 
@@ -88,6 +94,36 @@ class ModulesLockAction extends AbstractController {
 
         $this->settingsSaverService->saveModulesLockSettings($dtos);
 
+        $lockedModuleNames = $this->getLockedModuleNames($dtos);
+        $this->pendoTrackService->track(PendoTrackEventEnum::MODULE_LOCK_SETTINGS_UPDATED, [
+            'update_status'        => "success",
+            'locked_modules'       => implode(",", $lockedModuleNames),
+            'locked_modules_count' => count($lockedModuleNames),
+            'total_modules_count'  => count($dtos),
+        ]);
+
         return BaseResponse::buildOkResponse()->toJsonResponse();
+    }
+
+    /**
+     * Returns sorted names of the locked modules. Module names are system constants (not user data),
+     * so anything that is not a known module name is skipped.
+     *
+     * @param SettingsModuleLockDTO[] $lockDtos
+     *
+     * @return string[]
+     */
+    private function getLockedModuleNames(array $lockDtos): array
+    {
+        $lockedModuleNames = [];
+        foreach ($lockDtos as $lockDto) {
+            if ($lockDto->isLocked() && in_array($lockDto->getName(), ModulesService::ALL_MODULES, true)) {
+                $lockedModuleNames[] = $lockDto->getName();
+            }
+        }
+
+        sort($lockedModuleNames);
+
+        return $lockedModuleNames;
     }
 }

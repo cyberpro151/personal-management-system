@@ -5,8 +5,10 @@ namespace App\Services\Module\Storage;
 use App\Entity\FilesTags;
 use App\Entity\Modules\ModuleData;
 use App\Entity\System\LockedResource;
+use App\Enum\PendoTrackEventEnum;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Services\Module\ModulesService;
 use App\Services\Shell\ShellTreeService;
@@ -30,7 +32,8 @@ class StorageService
         private readonly LoggerInterface        $logger,
         private readonly LockedResourceService  $lockedResourceService,
         private readonly TranslatorInterface    $translator,
-        private readonly EntityManagerInterface $entityManager
+        private readonly EntityManagerInterface $entityManager,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -89,10 +92,12 @@ class StorageService
             return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.storage.moveFileOrDir.oldPathEqualsNewPath'));
         }
 
-        $failedFiles = [];
+        $failedFiles            = [];
+        $renamedOnConflictCount = 0;
         foreach ($filesNames as $fileName) {
             $oldFilePath = $oldDirPath . DIRECTORY_SEPARATOR . $fileName;
             $newFilePath = $newDirPath . DIRECTORY_SEPARATOR . $fileName;
+            $hasNameConflict = false;
             if (file_exists($newFilePath)) {
                 $nameWithoutExt = pathinfo($fileName, PATHINFO_FILENAME);
                 $extension      = pathinfo($fileName, PATHINFO_EXTENSION);
@@ -100,6 +105,7 @@ class StorageService
 
                 $newFileName = $nameWithoutExt . Uuid::uuid4() . "_" . $dateTimeStamp . "." . $extension;
                 $newFilePath = $newDirPath . DIRECTORY_SEPARATOR . "_" . $newFileName;
+                $hasNameConflict = true;
             }
 
             $isRenamed = rename($oldFilePath, $newFilePath);
@@ -112,6 +118,10 @@ class StorageService
                 $failedFiles[] = $fileName;
             }
 
+            if ($isRenamed && $hasNameConflict) {
+                $renamedOnConflictCount++;
+            }
+
             $tags = $this->entityManager->getRepository(FilesTags::class)->getFileTagsEntityByFileFullPath($oldFilePath);
             if ($tags) {
                 $tags->setFullFilePath($newFilePath);
@@ -120,6 +130,19 @@ class StorageService
         }
 
         $this->entityManager->flush();
+
+        // only the counts and module names are sent, never the file names or paths
+        $sourceModule = ModulesService::getUploadModuleNameByFilePath($oldDirPath);
+        $targetModule = ModulesService::getUploadModuleNameByFilePath($newDirPath);
+        $this->pendoTrackService->track(PendoTrackEventEnum::STORAGE_FILES_MOVED, [
+            'source_module'             => $sourceModule,
+            'target_module'             => $targetModule,
+            'is_cross_module'           => $sourceModule !== $targetModule,
+            'requested_count'           => count($filesNames),
+            'moved_count'               => count($filesNames) - count($failedFiles),
+            'failed_count'              => count($failedFiles),
+            'renamed_on_conflict_count' => $renamedOnConflictCount,
+        ]);
 
         if (!empty($failedFiles)) {
             $msg = $this->translator->trans('module.storage.moveFileOrDir.failedCopySomeFiles') . json_encode($failedFiles);

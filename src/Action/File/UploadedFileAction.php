@@ -4,10 +4,12 @@ namespace App\Action\File;
 
 use App\DTO\Internal\Upload\UploadConfigurationDTO;
 use App\Enum\File\UploadStatusEnum;
+use App\Enum\PendoTrackEventEnum;
 use App\Exception\File\UploadValidationException;
 use App\Response\Base\BaseResponse;
 use App\Response\UploadedFile\UploadConfigurationResponse;
 use App\Response\UploadedFile\UploadResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Services\Files\Upload\FileUploadConfigurator;
 use App\Services\Files\Upload\FileUploadService;
@@ -38,7 +40,8 @@ class UploadedFileAction extends AbstractController
         private readonly LoggerInterface             $logger,
         private readonly FileUploadConfigurator      $fileUploadConfigurator,
         private readonly TranslatorInterface         $translator,
-        private readonly TemporaryFileHandlerService $temporaryFileHandlerService
+        private readonly TemporaryFileHandlerService $temporaryFileHandlerService,
+        private readonly PendoTrackService           $pendoTrackService
     ) {
     }
 
@@ -70,6 +73,7 @@ class UploadedFileAction extends AbstractController
 
         $errorMessage = $this->translator->trans('file.upload.msg.uploadError');
         $isError      = false;
+        $errorType    = null;
         $status       = UploadStatusEnum::SUCCESS;
         $response     = UploadResponse::buildOkResponse();
 
@@ -93,10 +97,12 @@ class UploadedFileAction extends AbstractController
                 unlink($filePath);
             }
         } catch (UploadValidationException) {
-            $status  = UploadStatusEnum::ERROR;
-            $isError = true;
+            $status    = UploadStatusEnum::ERROR;
+            $errorType = "validation";
+            $isError   = true;
         } catch (Exception|TypeError $e) {
-            $status = UploadStatusEnum::ERROR;
+            $status    = UploadStatusEnum::ERROR;
+            $errorType = "unexpected";
             $this->logException($e);
             $isError = true;
         }
@@ -110,6 +116,18 @@ class UploadedFileAction extends AbstractController
         }
 
         $response->setStatus($status->value);
+
+        // the upload outcome is final here (validations, moving out of the temp dir and tagging are done)
+        $this->pendoTrackService->track(PendoTrackEventEnum::FILE_UPLOAD_COMPLETED, [
+            'upload_status'   => $status->value,
+            'error_type'      => $errorType,
+            'upload_target'   => is_string($uploadConfigId) ? $this->fileUploadConfigurator->getUploadTarget($uploadConfigId) : "unknown",
+            'file_extension'  => $this->getFileExtensionForTracking($fileName),
+            'file_size_bytes' => is_numeric($fileSizeBytes) ? (int) $fileSizeBytes : null,
+            'tag_count'       => is_array($tags) ? count($tags) : 0,
+            'has_custom_name' => !empty($userDefinedName),
+            'is_demo'         => EnvReader::isDemo(),
+        ]);
 
         return $response->toJsonResponse();
     }
@@ -166,6 +184,28 @@ class UploadedFileAction extends AbstractController
         }
 
         return $response->toJsonResponse();
+    }
+
+    /**
+     * Returns only the extension, as the file name itself can contain personal data,
+     * anything that does not look like a file extension is skipped.
+     *
+     * @param mixed $fileName
+     *
+     * @return string|null
+     */
+    private function getFileExtensionForTracking(mixed $fileName): ?string
+    {
+        if (!is_string($fileName)) {
+            return null;
+        }
+
+        $extension = strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+        if (!preg_match("#^[a-z0-9_-]{1,16}$#", $extension)) {
+            return null;
+        }
+
+        return $extension;
     }
 
 }

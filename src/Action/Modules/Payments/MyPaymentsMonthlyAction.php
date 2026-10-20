@@ -7,7 +7,9 @@ namespace App\Action\Modules\Payments;
 use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Payments\MyPaymentsMonthly;
 use App\Entity\Modules\Payments\MyPaymentsSettings;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -31,7 +33,8 @@ class MyPaymentsMonthlyAction extends AbstractController {
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly LoggerInterface        $logger,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -114,6 +117,8 @@ class MyPaymentsMonthlyAction extends AbstractController {
         $dataArray = $contentArray['data'] ?? [];
 
         if (empty($dataArray)) {
+            $this->trackImportCompleted("no_data", $dataArray);
+
             $msg = $this->translator->trans('module.monthly_payments.import.message.noImportData');
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
         }
@@ -128,13 +133,54 @@ class MyPaymentsMonthlyAction extends AbstractController {
         } catch (Exception $e) {
             $this->em->rollback();
             $this->logException($e);
+            $this->trackImportCompleted("failure", $dataArray);
 
             $msg = $this->translator->trans('module.monthly_payments.import.message.fail');
             return BaseResponse::buildInternalServerErrorResponse($msg)->toJsonResponse();
         }
 
+        $this->trackImportCompleted("success", $dataArray);
+
         $msg = $this->translator->trans('module.monthly_payments.import.message.success');
         return BaseResponse::buildOkResponse($msg)->toJsonResponse();
+    }
+
+    /**
+     * Tracks the import outcome, only the counts and the dates range are sent (never descriptions or amounts)
+     *
+     * @param string $importStatus
+     * @param mixed  $rows
+     */
+    private function trackImportCompleted(string $importStatus, mixed $rows): void
+    {
+        $rows    = is_array($rows) ? $rows : [];
+        $typeIds = [];
+        $dates   = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            if (isset($row['typeId']) && is_scalar($row['typeId'])) {
+                $typeIds[(string) $row['typeId']] = true;
+            }
+
+            if (!empty($row['date']) && is_string($row['date'])) {
+                try {
+                    $dates[] = (new DateTime($row['date']))->format('Y-m-d');
+                } catch (Exception) {
+                    // not parsable date is skipped, the import itself takes care of it
+                }
+            }
+        }
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::MONTHLY_PAYMENTS_IMPORT_COMPLETED, [
+            'import_status'               => $importStatus,
+            'rows_count'                  => count($rows),
+            'distinct_payment_type_count' => count($typeIds),
+            'earliest_payment_date'       => empty($dates) ? null : min($dates),
+            'latest_payment_date'         => empty($dates) ? null : max($dates),
+        ]);
     }
 
     /**

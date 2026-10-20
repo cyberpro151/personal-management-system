@@ -5,8 +5,10 @@ namespace App\Action\Modules\Todo;
 use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Todo\MyTodo;
 use App\Entity\Modules\Todo\MyTodoElement;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Todo\MyTodoRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -25,7 +27,8 @@ class MyTodoElementAction extends AbstractController {
 
     public function __construct(
         private readonly MyTodoRepository       $todoRepository,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -102,10 +105,23 @@ class MyTodoElementAction extends AbstractController {
         $this->em->flush();
 
         $areAllElementsDone = $this->todoRepository->areAllElementsDone($todo->getId());
+        $wasTodoCompleted   = (bool) $todo->getCompleted();
         $todo->setCompleted($areAllElementsDone);
 
         $this->em->persist($todo);
         $this->em->flush();
+
+        // only the transition (not completed -> completed) counts, re-saving already completed todo is not tracked
+        if (!$wasTodoCompleted && $areAllElementsDone) {
+            $elementCount = $this->em->getRepository(MyTodoElement::class)->count(['myTodo' => $todo, 'deleted' => false]);
+            $this->pendoTrackService->track(PendoTrackEventEnum::TODO_LIST_COMPLETED, [
+                'todo_id'               => $todo->getId(),
+                'element_count'         => $elementCount,
+                'related_module'        => $todo->getModule()?->getName(),
+                'has_related_issue'     => !is_null($todo->getMyIssue()),
+                'is_shown_on_dashboard' => (bool) $todo->getDisplayOnDashboard(),
+            ]);
+        }
     }
 
 }

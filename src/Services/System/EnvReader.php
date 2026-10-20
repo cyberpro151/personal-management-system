@@ -10,6 +10,10 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 class EnvReader extends AbstractController {
 
     const APP_DEFAULT_NPL_RECEIVER_EMAILS = "APP_DEFAULT_NPL_RECEIVER_EMAILS";
+    const PENDO_TRACK_EVENT_SECRET        = "PENDO_TRACK_EVENT_SECRET";
+    const PENDO_DATA_HOST                 = "PENDO_DATA_HOST";
+
+    private const DEFAULT_PENDO_DATA_HOST = "data.pendo.io";
 
     public static function getUploadDir() {
         return $_ENV['UPLOAD_DIR'];
@@ -113,6 +117,54 @@ class EnvReader extends AbstractController {
     public static function getEnvironment(): string
     {
         return $_ENV['APP_ENV'];
+    }
+
+    /**
+     * Returns the integration key used for sending the server side Pendo Track Events.
+     * Empty string means that the tracking is not configured (disabled).
+     *
+     * This is a credential, so it must only be provided via the environment, never committed.
+     *
+     * @return string
+     */
+    public static function getPendoTrackEventSecret(): string
+    {
+        return self::getOptionalEnvValue(self::PENDO_TRACK_EVENT_SECRET);
+    }
+
+    /**
+     * Returns the host of the Pendo data API (differs per Pendo region)
+     *
+     * @return string
+     */
+    public static function getPendoDataHost(): string
+    {
+        $dataHost = self::getOptionalEnvValue(self::PENDO_DATA_HOST);
+        if ("" === $dataHost) {
+            return self::DEFAULT_PENDO_DATA_HOST;
+        }
+
+        return $dataHost;
+    }
+
+    /**
+     * Returns the first non-empty value found for given variable, or empty string if there is none.
+     * Checks every source, as the value can come either from `.env` or from the real environment,
+     * and the real environment is not always exposed in `$_ENV` (depends on `variables_order`).
+     *
+     * @param string $name
+     *
+     * @return string
+     */
+    private static function getOptionalEnvValue(string $name): string
+    {
+        foreach ([$_ENV[$name] ?? null, $_SERVER[$name] ?? null, getenv($name)] as $value) {
+            if (is_string($value) && "" !== trim($value)) {
+                return trim($value);
+            }
+        }
+
+        return "";
     }
 
 }

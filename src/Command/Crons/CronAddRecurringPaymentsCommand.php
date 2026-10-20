@@ -4,8 +4,10 @@ namespace App\Command\Crons;
 
 use App\Entity\Modules\Payments\MyPaymentsMonthly;
 use App\Entity\Modules\Payments\MyRecurringPaymentMonthly;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Payments\MyPaymentsMonthlyRepository;
 use App\Repository\Modules\Payments\MyRecurringPaymentMonthlyRepository;
+use App\Services\External\PendoTrackService;
 use DateTime;
 use Doctrine\ORM\EntityManagerInterface;
 use Exception;
@@ -49,6 +51,7 @@ class CronAddRecurringPaymentsCommand extends Command
         private readonly EntityManagerInterface $em,
         private readonly MyPaymentsMonthlyRepository $paymentsMonthlyRepository,
         private readonly MyRecurringPaymentMonthlyRepository $recurringPaymentMonthlyRepository,
+        private readonly PendoTrackService $pendoTrackService,
         string $name = null
     ) {
         parent::__construct($name);
@@ -84,9 +87,15 @@ class CronAddRecurringPaymentsCommand extends Command
                 $this->addRecurringPaymentsToDatabase($recurringPaymentsToSet);
                 $this->report($io);
 
+                // runs which added nothing are not tracked, else each hourly run would only create noise
+                if ($this->countOfAddedPayments > 0) {
+                    $this->trackRecurringPaymentsPosted("success");
+                }
+
             }catch(Exception $e){
                 $this->logger->critical("There was an error while trying to add recurring payments.");
                 $this->logger->critical($e->getMessage());
+                $this->trackRecurringPaymentsPosted("failure");
                 return Command::FAILURE;
             }
 
@@ -156,6 +165,23 @@ class CronAddRecurringPaymentsCommand extends Command
         $io->note("Number of already existing recurring payments: "     . $this->countOfAlreadyExistingPayments);
         $io->note("Number of recurring payments that will be added: "   . $this->countOfFilteredPayments);
         $io->note("Number of added recurring payments: "                . $this->countOfAddedPayments);
+    }
+
+    /**
+     * Tracks the run outcome (there is no request in cron, so the visitor is resolved to the active user)
+     *
+     * @param string $runStatus
+     */
+    private function trackRecurringPaymentsPosted(string $runStatus): void
+    {
+        $this->pendoTrackService->track(PendoTrackEventEnum::RECURRING_PAYMENTS_POSTED, [
+            'year_month'                      => $this->currYearMonth,
+            'active_recurring_payments_count' => $this->countOfPaymentsToAdd,
+            'already_existing_count'          => $this->countOfAlreadyExistingPayments,
+            'to_add_count'                    => $this->countOfFilteredPayments,
+            'added_count'                     => $this->countOfAddedPayments,
+            'run_status'                      => $runStatus,
+        ]);
     }
 
     /**

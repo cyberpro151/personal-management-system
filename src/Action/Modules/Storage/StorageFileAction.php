@@ -4,7 +4,9 @@ namespace App\Action\Modules\Storage;
 
 use App\Attribute\ModuleAttribute;
 use App\Entity\FilesTags;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\Module\Storage\StorageFileService;
 use App\Services\Module\Storage\StorageService;
@@ -27,7 +29,8 @@ class StorageFileAction extends AbstractController
         private readonly StorageFileService     $storageFileService,
         private readonly LoggerInterface        $logger,
         private readonly EntityManagerInterface $em,
-        private readonly TranslatorInterface    $translator
+        private readonly TranslatorInterface    $translator,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -108,6 +111,15 @@ class StorageFileAction extends AbstractController
         }
 
         $notRemovedPaths = $this->storageFileService->removeFiles($filePaths);
+
+        // only the counts are sent, never the file names or paths
+        $this->pendoTrackService->track(PendoTrackEventEnum::STORAGE_FILES_REMOVED, [
+            'storage_module'  => ModulesService::getUploadModuleNameByFilePath($dirPath),
+            'requested_count' => count($filePaths),
+            'removed_count'   => count($filePaths) - count($notRemovedPaths),
+            'failed_count'    => count($notRemovedPaths),
+        ]);
+
         if (!empty($notRemovedPaths)) {
             $msg = $this->translator->trans('module.storage.remove.couldNotRemoveSomeFiles') . ": " . json_encode($notRemovedPaths);
             return BaseResponse::buildBadRequestErrorResponse($msg)->toJsonResponse();
