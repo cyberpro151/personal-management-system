@@ -5,8 +5,10 @@ namespace App\Services\Module\Storage;
 use App\Entity\FilesTags;
 use App\Entity\Modules\ModuleData;
 use App\Entity\System\LockedResource;
+use App\Enum\PendoTrackEventEnum;
 use App\Enum\StorageModuleEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Services\Module\ModulesService;
 use App\Services\Shell\ShellTreeService;
@@ -30,7 +32,8 @@ class StorageService
         private readonly LoggerInterface        $logger,
         private readonly LockedResourceService  $lockedResourceService,
         private readonly TranslatorInterface    $translator,
-        private readonly EntityManagerInterface $entityManager
+        private readonly EntityManagerInterface $entityManager,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -89,7 +92,8 @@ class StorageService
             return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.storage.moveFileOrDir.oldPathEqualsNewPath'));
         }
 
-        $failedFiles = [];
+        $failedFiles             = [];
+        $renamedOnCollisionCount = 0;
         foreach ($filesNames as $fileName) {
             $oldFilePath = $oldDirPath . DIRECTORY_SEPARATOR . $fileName;
             $newFilePath = $newDirPath . DIRECTORY_SEPARATOR . $fileName;
@@ -100,6 +104,7 @@ class StorageService
 
                 $newFileName = $nameWithoutExt . Uuid::uuid4() . "_" . $dateTimeStamp . "." . $extension;
                 $newFilePath = $newDirPath . DIRECTORY_SEPARATOR . "_" . $newFileName;
+                $renamedOnCollisionCount++;
             }
 
             $isRenamed = rename($oldFilePath, $newFilePath);
@@ -120,6 +125,15 @@ class StorageService
         }
 
         $this->entityManager->flush();
+
+        $this->pendoTrackService->track(PendoTrackEventEnum::STORAGE_FILES_MOVED, [
+            'fileCount'               => count($filesNames),
+            'failedCount'             => count($failedFiles),
+            'renamedOnCollisionCount' => $renamedOnCollisionCount,
+            'sourceModule'            => self::getModuleEnumForPath($oldDirPath)?->value,
+            'targetModule'            => self::getModuleEnumForPath($newDirPath)?->value,
+            'success'                 => empty($failedFiles),
+        ]);
 
         if (!empty($failedFiles)) {
             $msg = $this->translator->trans('module.storage.moveFileOrDir.failedCopySomeFiles') . json_encode($failedFiles);
@@ -142,6 +156,25 @@ class StorageService
             StorageModuleEnum::FILES->value => ModulesService::MODULE_NAME_FILES,
             default => throw new \LogicException("Unsupported module {$enum->value}")
         };
+    }
+
+    /**
+     * Returns the storage module to which given path belongs, or null if it's not a storage module path
+     *
+     * @param string $path
+     *
+     * @return StorageModuleEnum|null
+     */
+    public static function getModuleEnumForPath(string $path): ?StorageModuleEnum
+    {
+        $moduleName = ModulesService::getUploadModuleNameByFilePath($path);
+        foreach (StorageModuleEnum::cases() as $enum) {
+            if (self::enumToModuleName($enum) === $moduleName) {
+                return $enum;
+            }
+        }
+
+        return null;
     }
 
     /**

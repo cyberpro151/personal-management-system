@@ -5,7 +5,9 @@ namespace App\Services\Module\Storage;
 use App\Entity\FilesTags;
 use App\Entity\Modules\ModuleData;
 use App\Entity\System\LockedResource;
+use App\Enum\PendoTrackEventEnum;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Files\PathService;
 use App\Traits\ExceptionLoggerAwareTrait;
 use DateTime;
@@ -22,7 +24,8 @@ class StorageFolderService
     public function __construct(
         private readonly TranslatorInterface    $translator,
         private readonly LoggerInterface        $logger,
-        private readonly EntityManagerInterface $entityManager
+        private readonly EntityManagerInterface $entityManager,
+        private readonly PendoTrackService      $pendoTrackService
     ) {
     }
 
@@ -80,6 +83,7 @@ class StorageFolderService
             return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.storage.moveFileOrDir.parentIntoDirNotAllowed'));
         }
 
+        $outcome = [];
         if ($moveDir) {
             if (in_array($oldDirPath, PathService::getAllStorageBaseDirs())) {
                 $msg = $this->translator->trans('module.storage.moveOrCopyFolder.cannotMoveBaseDir');
@@ -91,20 +95,30 @@ class StorageFolderService
                 return BaseResponse::buildBadRequestErrorResponse($this->translator->trans('module.storage.moveFileOrDir.folderWithThisNameAlreadyExist'));
             }
 
-            return $this->moveFolder($oldDirPath, $newDirPath, $targetModuleName);
+            $response = $this->moveFolder($oldDirPath, $newDirPath, $targetModuleName, $outcome);
+        } else {
+            $response = $this->copyFilesFromDir($oldDirPath, $newDirParentPath, $outcome);
         }
 
-        return $this->copyFilesFromDir($oldDirPath, $newDirParentPath);
+        $this->pendoTrackService->track(PendoTrackEventEnum::STORAGE_FOLDER_MOVED_OR_COPIED, [
+            'operation'        => $moveDir ? 'move' : 'copy',
+            'targetModuleName' => $targetModuleName,
+            'sourceModule'     => StorageService::getModuleEnumForPath($oldDirPath)?->value,
+            ...$outcome,
+        ]);
+
+        return $response;
     }
 
     /**
      * @param string $oldDirPath
      * @param string $newDirPath
      * @param string $targetModuleName
+     * @param array  $outcome - filled with the operation outcome (used for tracking)
      *
      * @return BaseResponse
      */
-    private function moveFolder(string $oldDirPath, string $newDirPath, string $targetModuleName): BaseResponse
+    private function moveFolder(string $oldDirPath, string $newDirPath, string $targetModuleName, array &$outcome): BaseResponse
     {
         if (!rename($oldDirPath, $newDirPath)) {
             $msg = $this->translator->trans('module.storage.moveFileOrDir.unknownError');
@@ -115,6 +129,7 @@ class StorageFolderService
                 'possibleError' => error_get_last(),
             ]);
 
+            $outcome = ['success' => false, 'failureReason' => 'rename_failed', 'wasReverted' => false];
             return BaseResponse::buildInternalServerErrorResponse($msg);
         }
 
@@ -151,24 +166,28 @@ class StorageFolderService
                     'possibleError' => error_get_last(),
                 ]);
 
+                $outcome = ['success' => false, 'failureReason' => 'database_update_failed', 'wasReverted' => false];
                 $msg = $this->translator->trans('module.storage.moveFileOrDir.folderMovedDatabaseChangesFailed');
                 return BaseResponse::buildInternalServerErrorResponse($msg);
             }
 
+            $outcome = ['success' => false, 'failureReason' => 'database_update_failed', 'wasReverted' => true];
             $msg = $this->translator->trans('module.storage.moveFileOrDir.folderCouldNotBeMovedReverted');
             return BaseResponse::buildInternalServerErrorResponse($msg);
         }
 
+        $outcome = ['success' => true, 'wasReverted' => false];
         return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.folderHaveBeenMoved'));
     }
 
     /**
      * @param string $oldDirPath
      * @param string $newDirPath
+     * @param array  $outcome - filled with the operation outcome (used for tracking)
      *
      * @return BaseResponse
      */
-    public function copyFilesFromDir(string $oldDirPath, string $newDirPath): BaseResponse
+    public function copyFilesFromDir(string $oldDirPath, string $newDirPath, array &$outcome = []): BaseResponse
     {
         $copiedFilePaths = [];
         $someFilesExisted = false;
@@ -206,6 +225,13 @@ class StorageFolderService
                 }
             }
 
+            $outcome = [
+                'success'          => false,
+                'failureReason'    => 'copy_failed',
+                'wasReverted'      => true,
+                'copiedFileCount'  => 0,
+                'someFilesExisted' => $someFilesExisted,
+            ];
             return BaseResponse::buildOkResponse($this->translator->trans('module.storage.common.errorReverted'));
         }
 
@@ -221,6 +247,12 @@ class StorageFolderService
 
         $this->entityManager->flush();
 
+        $outcome = [
+            'success'          => true,
+            'wasReverted'      => false,
+            'copiedFileCount'  => count($copiedFilePaths),
+            'someFilesExisted' => $someFilesExisted,
+        ];
         if ($someFilesExisted) {
             return BaseResponse::buildOkResponse($this->translator->trans('module.storage.moveFileOrDir.filesHaveBeenCopiedButExisted'));
         }

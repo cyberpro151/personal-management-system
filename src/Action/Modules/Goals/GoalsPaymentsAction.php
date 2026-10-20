@@ -6,8 +6,10 @@ namespace App\Action\Modules\Goals;
 
 use App\Attribute\ModuleAttribute;
 use App\Entity\Modules\Goals\MyGoalsPayments;
+use App\Enum\PendoTrackEventEnum;
 use App\Repository\Modules\Goals\MyGoalsPaymentsRepository;
 use App\Response\Base\BaseResponse;
+use App\Services\External\PendoTrackService;
 use App\Services\Module\ModulesService;
 use App\Services\RequestService;
 use App\Services\TypeProcessor\ArrayHandler;
@@ -25,7 +27,8 @@ class GoalsPaymentsAction extends AbstractController {
 
     public function __construct(
         private readonly MyGoalsPaymentsRepository $goalsPaymentsRepository,
-        private readonly EntityManagerInterface $em
+        private readonly EntityManagerInterface $em,
+        private readonly PendoTrackService $pendoTrackService
     ) {
     }
 
@@ -97,9 +100,12 @@ class GoalsPaymentsAction extends AbstractController {
      */
     private function createOrUpdate(Request $request, ?MyGoalsPayments $payment = null): void
     {
-        if (!$payment) {
+        $isNew = is_null($payment);
+        if ($isNew) {
             $payment = new MyGoalsPayments();
         }
+
+        $wasGoalReached = !$isNew && $payment->getMoneyCollected() >= $payment->getMoneyGoal();
 
         $dataArray       = RequestService::tryFromJsonBody($request);
         $name            = ArrayHandler::get($dataArray, 'name', allowEmpty: false);
@@ -121,5 +127,18 @@ class GoalsPaymentsAction extends AbstractController {
 
         $this->em->persist($payment);
         $this->em->flush();
+
+        // only when this save crossed the goal threshold, not on each save of an already reached goal
+        $isGoalReached = $payment->getMoneyCollected() >= $payment->getMoneyGoal();
+        if (!$wasGoalReached && $isGoalReached) {
+            $today = new DateTime('today');
+            $this->pendoTrackService->track(PendoTrackEventEnum::SAVINGS_GOAL_REACHED, [
+                'goalPaymentId'          => $payment->getId(),
+                'isNew'                  => $isNew,
+                'daysToDeadline'         => (int) $today->diff($end)->format('%r%a'),
+                'collectionDurationDays' => (int) $start->diff($today)->format('%r%a'), // days since the collection start
+                'isForDashboard'         => (bool) $payment->getDisplayOnDashboard(),
+            ]);
+        }
     }
 }
